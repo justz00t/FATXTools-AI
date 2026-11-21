@@ -45,28 +45,39 @@ namespace FATXTools.DiskTypes
             return _position;
         }
 
-        public override void Read(byte[] buffer, int count)
+        public override int Read(byte[] buffer, int count)
         {
-            // Align position down to nearest sector
-            var offset = _position;
-            if (_position % _sectorLength != 0)
+            return Read(buffer, 0, count);
+        }
+
+        public override int Read(byte[] buffer, int index, int count)
+        {
+            // Raw devices only accept sector aligned reads. Align the start
+            // down and the end up so that a read straddling a sector
+            // boundary is fully covered.
+            var misalignment = _position % _sectorLength;
+            var alignedOffset = _position - misalignment;
+            var alignedCount = (int)((misalignment + count + (_sectorLength - 1)) & ~(_sectorLength - 1));
+
+            BaseStream.Seek(alignedOffset, SeekOrigin.Begin);
+
+            var tempBuf = new byte[alignedCount];
+            int total = 0;
+            while (total < alignedCount)
             {
-                offset -= _position % _sectorLength;
+                int n = BaseStream.Read(tempBuf, total, alignedCount - total);
+                if (n <= 0)
+                    break;
+                total += n;
             }
 
-            // Then seek to the sector aligned offset
-            BaseStream.Seek(offset, SeekOrigin.Begin);
-
-            // Now read bytes of sector size
-            var alignedCount = (int)(((count + (_sectorLength - 1)) & ~(_sectorLength - 1)));
-            var tempBuf = new byte[alignedCount];
-            BaseStream.Read(tempBuf, 0, alignedCount);
-
             // Only copy the bytes we need
-            Buffer.BlockCopy(tempBuf, (int)(_position % _sectorLength), buffer, 0, count);
+            Buffer.BlockCopy(tempBuf, (int)misalignment, buffer, index, count);
 
             // Increment the position by how much we took
             _position += count;
+
+            return (int)Math.Max(0, Math.Min(count, total - misalignment));
         }
 
         public override byte[] ReadBytes(int count)

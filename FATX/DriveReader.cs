@@ -44,6 +44,7 @@ namespace FATX
                 AddPartition("Partition3", 0x5DC80000, 0x2ee00000);     // CACHE
                 AddPartition("Partition4", 0x2EE80000, 0x2ee00000);     // CACHE
                 AddPartition("Partition5", 0x80000, 0x2ee00000);        // CACHE
+                AddOriginalXboxExtendedPartitions();
                 return;
             }
 
@@ -158,6 +159,90 @@ namespace FATX
                 //AddPartition("TitleURLCachePartition", dumpPartitionOffset + 0x6000000, 0x2000000);
                 //AddPartition("SystemExtPartition", dumpPartitionOffset + 0x0C000000, 0xCE30000);
                 AddPartition("SystemAuxPartition", dumpPartitionOffset + 0x18e30000, 0x8000000);
+
+                // SystemAux ("SysExt") volume, present on newer dashboards.
+                AddPartitionIfPresent("SystemExtPartition", 0x10C080000, 0xCE30000);
+            }
+        }
+
+        /// <summary>
+        /// Checks for a FATX ("FATX" or "XTAF") superblock at <paramref name="offset"/>.
+        /// </summary>
+        public bool HasFatxSignature(long offset)
+        {
+            if (offset < 0 || offset + 4 > Length)
+                return false;
+
+            var saved = ByteOrder;
+            Seek(offset);
+            var magic = ReadBytes(4);
+            ByteOrder = saved;
+            return (magic[0] == 'F' && magic[1] == 'A' && magic[2] == 'T' && magic[3] == 'X') ||
+                   (magic[0] == 'X' && magic[1] == 'T' && magic[2] == 'A' && magic[3] == 'F');
+        }
+
+        private void AddPartitionIfPresent(string name, long offset, long length)
+        {
+            if (HasFatxSignature(offset))
+            {
+                AddPartition(name, offset, Math.Min(length, Length - offset));
+            }
+        }
+
+        /// <summary>
+        /// Adds the F: and G: partitions of modded original Xbox drives that
+        /// are larger than 8GB. Uses the XBPartitioner "****PARTINFO****"
+        /// table in sector 0 when present, otherwise the standard layouts.
+        /// </summary>
+        private void AddOriginalXboxExtendedPartitions()
+        {
+            const long SectorSize = 0x200;
+            const long DefaultFStart = 0x1DD156000;      // LBA 0xEE8AB0
+            const long Lba28Limit = 0x0FFFFFFFL * SectorSize;
+
+            Seek(0);
+            var sector = ReadBytes(0x200);
+            var magic = System.Text.Encoding.ASCII.GetString(sector, 0, 16);
+            if (magic == "****PARTINFO****")
+            {
+                Console.WriteLine("Found XBPartitioner partition table.");
+                // Entries 5.. are F:, G: and extra partitions. 0..4 are the
+                // standard partitions which are already added.
+                for (int i = 5; i < 14; i++)
+                {
+                    int e = 0x30 + i * 0x20;
+                    var flags = BitConverter.ToUInt32(sector, e + 0x10);
+                    var lbaStart = BitConverter.ToUInt32(sector, e + 0x14);
+                    var lbaSize = BitConverter.ToUInt32(sector, e + 0x18);
+                    if ((flags & 0x80000000) == 0 || lbaSize == 0)
+                        continue;
+
+                    long offset = lbaStart * SectorSize;
+                    long length = Math.Min(lbaSize * SectorSize, Length - offset);
+                    if (HasFatxSignature(offset))
+                    {
+                        AddPartition($"Partition{i + 1}", offset, length);
+                    }
+                }
+                return;
+            }
+
+            if (Length <= DefaultFStart)
+                return;
+
+            // No table: F: starts right after E:. It either ends at the LBA28
+            // limit (with G: after it) or takes the rest of the disk.
+            if (HasFatxSignature(DefaultFStart))
+            {
+                long fEnd = Length;
+                if (Length > Lba28Limit && HasFatxSignature(Lba28Limit))
+                    fEnd = Lba28Limit;
+                AddPartition("Partition6", DefaultFStart, fEnd - DefaultFStart);
+            }
+
+            if (Length > Lba28Limit && HasFatxSignature(Lba28Limit))
+            {
+                AddPartition("Partition7", Lba28Limit, Length - Lba28Limit);
             }
         }
 

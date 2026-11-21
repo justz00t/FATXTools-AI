@@ -1,9 +1,9 @@
 ﻿using FATX.Analyzers.Signatures;
 using FATX.Analyzers.Signatures.Blank;
 using FATX.FileSystem;
+using FATX.Formats;
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Text.Json;
 using System.Threading;
 
@@ -26,17 +26,18 @@ namespace FATX.Analyzers
         private List<FileSignature> _carvedFiles;
 
         public FileCarver(Volume volume)
+            : this(volume, FileCarverInterval.Cluster, 0)
         {
-            _volume = volume;
-            _interval = FileCarverInterval.Cluster;
-            _length = volume.Length;
         }
 
         public FileCarver(Volume volume, FileCarverInterval interval, long length)
         {
-            if (length == 0 || length > volume.FileAreaLength)
+            // NOTE: offsets are relative to the file area, so never scan past
+            // its end (previously this was set to the partition length which
+            // read past the end of the partition).
+            if (length <= 0 || length > volume.FileAreaLength)
             {
-                length = volume.Length;
+                length = volume.FileAreaLength;
             }
 
             _volume = volume;
@@ -83,72 +84,140 @@ namespace FATX.Analyzers
             return _volume;
         }
 
+        /// <summary>
+        /// Only scan clusters that are free in the active file allocation
+        /// table (faster, finds only deleted files).
+        /// </summary>
+        public bool FreeSpaceOnly { get; set; }
+
+        /// <summary>
+        /// Verify embedded checksums of found files (XEX block hashes, XBE
+        /// section digests). Slower since whole files are read.
+        /// </summary>
+        public bool VerifyFiles { get; set; }
+
+        /// <summary>
+        /// Bytes read per I/O request.
+        /// </summary>
+        private const int ChunkSize = 8 * 1024 * 1024;
+
         public List<FileSignature> Analyze(CancellationToken cancellationToken, IProgress<int> progress)
         {
-            var allSignatures = from assembly in AppDomain.CurrentDomain.GetAssemblies()
-                                from type in assembly.GetTypes()
-                                where type.Namespace == "FATX.Analyzers.Signatures"
-                                where type.IsSubclassOf(typeof(FileSignature))
-                                select type;
-
+            // NOTE: The old implementation created an instance of every
+            // signature type through reflection and issued several seeks and
+            // small reads for every interval (marked "too slow"). Now the area
+            // is read in large chunks and only the first four bytes at each
+            // interval are compared against a set of known magics; headers are
+            // parsed only on a match.
             _carvedFiles = new List<FileSignature>();
-            var interval = (long)_interval;
+            var counters = new Dictionary<string, int>();
 
-            var types = allSignatures.ToList();
+            long interval = (long)_interval;
+            var magics = new HashSet<uint>(FormatDetector.Magics);
+            var bytesPerCluster = (long)_volume.BytesPerCluster;
+            var chunkSize = (int)Math.Max(interval, (ChunkSize / interval) * interval);
 
-            var origByteOrder = _volume.GetReader().ByteOrder;
+            // Read 3 extra bytes so that a magic straddling a chunk boundary is
+            // still seen (only matters for byte/16 byte intervals).
+            var buffer = new byte[chunkSize + 3];
+            var reader = _volume.GetReader();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
 
-            long progressValue = 0;
-            long progressUpdate = interval * 0x200;
+            long lastReport = 0;
+            long reportEvery = Math.Max(1, (0x200 * interval));
 
-            for (long offset = 0; offset < _length; offset += interval)
+            for (long chunkStart = 0; chunkStart < _length; chunkStart += chunkSize)
             {
-                foreach (Type type in types)
+                if (cancellationToken.IsCancellationRequested)
+                    break;
+
+                int want = (int)Math.Min(chunkSize + 3, _length - chunkStart);
+
+                // Skip fully allocated chunks without reading them.
+                if (FreeSpaceOnly && ChunkFullyAllocated(chunkStart, Math.Min(chunkSize, want), bytesPerCluster))
                 {
-                    // too slow
-                    FileSignature signature = (FileSignature)Activator.CreateInstance(type, _volume, offset);
+                    ReportProgress(progress, chunkStart + chunkSize, interval, ref lastReport, reportEvery);
+                    continue;
+                }
 
-                    _volume.GetReader().ByteOrder = origByteOrder;
+                lock (reader)
+                {
+                    _volume.SeekFileArea(chunkStart);
+                    reader.Read(buffer, want);
+                }
 
-                    _volume.SeekFileArea(offset);
-                    bool test = signature.Test();
-                    if (test)
+                int scanEnd = Math.Min(chunkSize, want);
+                for (int pos = 0; pos < scanEnd; pos += (int)interval)
+                {
+                    if (pos + 4 > want)
+                        break;
+
+                    uint magic = (uint)(buffer[pos] << 24 | buffer[pos + 1] << 16 | buffer[pos + 2] << 8 | buffer[pos + 3]);
+                    if (!magics.Contains(magic))
+                        continue;
+
+                    long offset = chunkStart + pos;
+                    uint cluster = (uint)(offset / bytesPerCluster) + 1;
+                    bool allocated = _volume.IsClusterAllocated(cluster);
+                    if (FreeSpaceOnly && allocated)
+                        continue;
+
+                    try
                     {
-                        try
-                        {
-                            // Make sure that we record the file first
-                            _carvedFiles.Add(signature);
+                        var info = FormatDetector.Identify(new VolumeAreaSource(_volume, offset), VerifyFiles);
+                        if (info == null || !info.Plausible)
+                            continue;
 
-                            // Attempt to parse the file
-                            _volume.SeekFileArea(offset);
-                            signature.Parse();
-                            Console.WriteLine(string.Format("Found {0} at 0x{1:X}.", signature.GetType().Name, offset));
-                        }
-                        catch (Exception e)
+                        var signature = new CarvedFileSignature(_volume, offset, info)
                         {
-                            Console.WriteLine(string.Format("Exception thrown for {0} at 0x{1:X}: {2}", signature.GetType().Name, offset, e.Message));
-                            Console.WriteLine(e.StackTrace);
-                        }
+                            InAllocatedSpace = allocated
+                        };
+
+                        var baseName = info.Format.Split(' ')[0].Replace("%", "").Replace("-", "");
+                        counters.TryGetValue(baseName, out var n);
+                        counters[baseName] = ++n;
+                        signature.FileName = info.SuggestFileName($"{baseName}_{n:D4}");
+
+                        _carvedFiles.Add(signature);
+                        Console.WriteLine($"Found {info} at 0x{offset:X}.");
+                    }
+                    catch (Exception e)
+                    {
+                        Console.WriteLine($"Exception thrown at 0x{offset:X}: {e.Message}");
                     }
                 }
 
-                progressValue += interval;
-
-                if (progressValue % progressUpdate == 0)
-                    progress?.Report((int)(progressValue / interval));
-
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return _carvedFiles;
-                }
+                ReportProgress(progress, chunkStart + scanEnd, interval, ref lastReport, reportEvery);
             }
 
             // Fill up the progress bar
-            progress?.Report((int)(_length / interval));
+            progress?.Report((int)Math.Min(int.MaxValue, _length / interval));
 
-            Console.WriteLine("Complete!");
+            sw.Stop();
+            Console.WriteLine($"Complete! Found {_carvedFiles.Count} files in {sw.ElapsedMilliseconds} ms.");
 
             return _carvedFiles;
+        }
+
+        private bool ChunkFullyAllocated(long start, long length, long bytesPerCluster)
+        {
+            uint first = (uint)(start / bytesPerCluster) + 1;
+            uint last = (uint)((start + length - 1) / bytesPerCluster) + 1;
+            for (uint c = first; c <= last; c++)
+            {
+                if (!_volume.IsClusterAllocated(c))
+                    return false;
+            }
+            return true;
+        }
+
+        private static void ReportProgress(IProgress<int> progress, long position, long interval, ref long lastReport, long reportEvery)
+        {
+            if (position - lastReport >= reportEvery)
+            {
+                progress?.Report((int)Math.Min(int.MaxValue, position / interval));
+                lastReport = position;
+            }
         }
     }
 }

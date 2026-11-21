@@ -41,6 +41,7 @@ namespace FATXTools.Database
             this.dirent = dirent;
             this.clusterChain = null;
             this.parent = null;
+            this.collisions = new List<uint>();
             this.Children = new List<DatabaseFile>();
         }
 
@@ -130,6 +131,37 @@ namespace FATXTools.Database
         {
             get => clusterChain;
             set => clusterChain = value;
+        }
+
+        /// <summary>
+        /// Whether the cluster chain was set by the user (or loaded from a
+        /// database) and must not be regenerated automatically.
+        /// </summary>
+        public bool HasCustomClusterChain { get; private set; }
+
+        /// <summary>
+        /// Sets a user defined cluster chain which will be preserved when the
+        /// database is updated.
+        /// </summary>
+        public void SetCustomClusterChain(List<uint> chain)
+        {
+            clusterChain = chain ?? new List<uint>();
+            HasCustomClusterChain = true;
+        }
+
+        /// <summary>
+        /// Full path of this file within the recovered file system.
+        /// </summary>
+        public string GetFullPath()
+        {
+            var parts = new List<string>();
+            int depth = 0;
+            for (var f = this; f != null && depth < 4096; f = f.parent, depth++)
+            {
+                parts.Add(f.FileName);
+            }
+            parts.Reverse();
+            return "/" + string.Join("/", parts);
         }
 
         public uint Cluster => dirent.Cluster;

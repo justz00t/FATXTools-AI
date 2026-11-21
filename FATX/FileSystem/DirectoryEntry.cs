@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Buffers.Binary;
 using System.Text;
 
 namespace FATX.FileSystem
@@ -33,40 +34,48 @@ namespace FATX.FileSystem
 
         private void ReadDirectoryEntry(Platform platform, byte[] data, int offset)
         {
+            if (data == null || offset < 0 || offset + DirectoryEntrySize > data.Length)
+            {
+                throw new ArgumentOutOfRangeException(nameof(offset), "Not enough data for a directory entry.");
+            }
+
             this._fileNameLength = data[offset + 0];
             this._fileAttributes = data[offset + 1];
 
-            this._fileNameBytes = new byte[42];
-            Buffer.BlockCopy(data, offset + 2, this._fileNameBytes, 0, 42);
+            this._fileNameBytes = new byte[MaxFileNameLength];
+            Buffer.BlockCopy(data, offset + 2, this._fileNameBytes, 0, MaxFileNameLength);
 
+            // NOTE: Never modify the source buffer in place. Previously the
+            // Xbox 360 path byte-swapped the caller's buffer, which corrupted
+            // it for any later consumer (and for a second parse of the same
+            // entry).
+            var span = new ReadOnlySpan<byte>(data, offset, DirectoryEntrySize);
             if (platform == Platform.Xbox)
             {
-                this._firstCluster = BitConverter.ToUInt32(data, offset + 0x2C);
-                this._fileSize = BitConverter.ToUInt32(data, offset + 0x30);
-                this._creationTimeAsInt = BitConverter.ToUInt32(data, offset + 0x34);
-                this._lastWriteTimeAsInt = BitConverter.ToUInt32(data, offset + 0x38);
-                this._lastAccessTimeAsInt = BitConverter.ToUInt32(data, offset + 0x3C);
+                this._firstCluster = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(0x2C));
+                this._fileSize = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(0x30));
+                this._creationTimeAsInt = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(0x34));
+                this._lastWriteTimeAsInt = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(0x38));
+                this._lastAccessTimeAsInt = BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(0x3C));
                 this._creationTime = new XTimeStamp(this._creationTimeAsInt);
                 this._lastWriteTime = new XTimeStamp(this._lastWriteTimeAsInt);
                 this._lastAccessTime = new XTimeStamp(this._lastAccessTimeAsInt);
             }
-            else if (platform == Platform.X360)
+            else
             {
-                Array.Reverse(data, offset + 0x2C, 4);
-                this._firstCluster = BitConverter.ToUInt32(data, offset + 0x2C);
-                Array.Reverse(data, offset + 0x30, 4);
-                this._fileSize = BitConverter.ToUInt32(data, offset + 0x30);
-                Array.Reverse(data, offset + 0x34, 4);
-                this._creationTimeAsInt = BitConverter.ToUInt32(data, offset + 0x34);
-                Array.Reverse(data, offset + 0x38, 4);
-                this._lastWriteTimeAsInt = BitConverter.ToUInt32(data, offset + 0x38);
-                Array.Reverse(data, offset + 0x3C, 4);
-                this._lastAccessTimeAsInt = BitConverter.ToUInt32(data, offset + 0x3C);
+                this._firstCluster = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(0x2C));
+                this._fileSize = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(0x30));
+                this._creationTimeAsInt = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(0x34));
+                this._lastWriteTimeAsInt = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(0x38));
+                this._lastAccessTimeAsInt = BinaryPrimitives.ReadUInt32BigEndian(span.Slice(0x3C));
                 this._creationTime = new X360TimeStamp(this._creationTimeAsInt);
                 this._lastWriteTime = new X360TimeStamp(this._lastWriteTimeAsInt);
                 this._lastAccessTime = new X360TimeStamp(this._lastAccessTimeAsInt);
             }
         }
+
+        public const int DirectoryEntrySize = 0x40;
+        public const int MaxFileNameLength = 42;
 
         public uint Cluster { get => _cluster; set => _cluster = value; }
 
@@ -83,33 +92,41 @@ namespace FATX.FileSystem
         {
             get
             {
-                if (string.IsNullOrEmpty(_fileName))
+                if (_fileName == null)
                 {
+                    int length;
                     if (_fileNameLength == Constants.DirentDeleted)
                     {
-                        var trueFileNameLength = Array.IndexOf(_fileNameBytes, (byte)0xff);
-                        if (trueFileNameLength == -1)
+                        // The length byte is overwritten on deletion, so the
+                        // real length is wherever the 0xFF padding starts.
+                        length = Array.IndexOf(_fileNameBytes, (byte)0xff);
+                        if (length == -1)
                         {
-                            trueFileNameLength = 42;
+                            length = MaxFileNameLength;
                         }
-                        _fileName = Encoding.ASCII.GetString(_fileNameBytes, 0, trueFileNameLength);
                     }
                     else
                     {
-                        if (_fileNameLength > 42)
-                        {
-                            // Warn user!
-                            //Console.WriteLine("Invalid file name length!");
-                            _fileNameLength = 42;
-                        }
-
-                        _fileName = Encoding.ASCII.GetString(_fileNameBytes, 0, _fileNameLength);
+                        length = Math.Min((int)_fileNameLength, MaxFileNameLength);
                     }
+
+                    // Stop at an embedded NUL; it can never be part of a name.
+                    var nul = Array.IndexOf(_fileNameBytes, (byte)0x00, 0, length);
+                    if (nul != -1)
+                    {
+                        length = nul;
+                    }
+
+                    // Latin1 keeps a 1:1 mapping of bytes to chars so that
+                    // nothing is silently replaced with '?'.
+                    _fileName = Latin1.GetString(_fileNameBytes, 0, length);
                 }
 
                 return _fileName;
             }
         }
+
+        private static readonly Encoding Latin1 = Encoding.GetEncoding("ISO-8859-1");
 
         public byte[] FileNameBytes => _fileNameBytes;
 

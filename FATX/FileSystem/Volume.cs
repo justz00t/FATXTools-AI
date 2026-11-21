@@ -40,6 +40,7 @@ namespace FATX.FileSystem
         private uint[] _fileAllocationTable;
         private long _fileAreaLength;
         private Platform _platform;
+        private HashSet<uint> _visitedDirectoryClusters;
 
         /// <summary>
         /// Creates a new FATX volume.
@@ -96,6 +97,42 @@ namespace FATX.FileSystem
             get { return _bytesPerCluster; }
         }
 
+        /// <summary>
+        /// Number of directory entries that fit into one cluster.
+        /// </summary>
+        public int DirentsPerCluster
+        {
+            get { return (int)(_bytesPerCluster / DirectoryEntry.DirectoryEntrySize); }
+        }
+
+        /// <summary>
+        /// Number of clusters in the file area (valid cluster indexes are 1..ClusterCount).
+        /// </summary>
+        public uint ClusterCount
+        {
+            get { return (uint)Math.Min(_maxClusters - 1, _fileAreaLength / Math.Max(1, _bytesPerCluster)); }
+        }
+
+        public bool IsFat16
+        {
+            get { return _isFat16; }
+        }
+
+        public uint SerialNumber
+        {
+            get { return _serialNumber; }
+        }
+
+        /// <summary>
+        /// Whether a cluster is marked as in use by the active file allocation table.
+        /// </summary>
+        public bool IsClusterAllocated(uint cluster)
+        {
+            if (_fileAllocationTable == null || cluster >= _fileAllocationTable.Length)
+                return false;
+            return _fileAllocationTable[cluster] != Constants.ClusterAvailable;
+        }
+
         public DriveReader GetReader()
         { return _reader; }
 
@@ -138,8 +175,24 @@ namespace FATX.FileSystem
             CalculateOffsets();
             ReadFileAllocationTable();
 
-            _root = ReadDirectoryStream(_rootDirFirstCluster);
-            PopulateDirentStream(_root, _rootDirFirstCluster);
+            if (_rootDirFirstCluster == 0 || _rootDirFirstCluster >= _maxClusters)
+            {
+                throw new FormatException($"Invalid root directory cluster for {_partitionName}: {_rootDirFirstCluster}");
+            }
+
+            _visitedDirectoryClusters = new HashSet<uint>();
+            _root = new List<DirectoryEntry>();
+            foreach (var cluster in GetClusterChain(_rootDirFirstCluster))
+            {
+                if (!_visitedDirectoryClusters.Add(cluster))
+                    break;
+                var stream = ReadDirectoryStream(cluster);
+                _root.AddRange(stream);
+                PopulateDirentStream(stream, cluster);
+                if (stream.Count < DirentsPerCluster)
+                    break;
+            }
+            _visitedDirectoryClusters = null;
 
             Mounted = true;
         }
@@ -149,6 +202,11 @@ namespace FATX.FileSystem
         /// </summary>
         private void ReadBootSector()
         {
+            if (_partitionOffset < 0 || _partitionOffset + Constants.ReservedBytes > _reader.Length)
+            {
+                throw new FormatException($"{_partitionName} at 0x{_partitionOffset:X} lies outside of the image (length 0x{_reader.Length:X}).");
+            }
+
             _reader.Seek(_partitionOffset);
             Console.WriteLine("Attempting to load FATX volume at {0:X16}", _reader.Position);
 
@@ -206,6 +264,16 @@ namespace FATX.FileSystem
         /// </summary>
         private void CalculateOffsets()
         {
+            // Valid FATX volumes use a power of two sectors per cluster
+            // (Xbox: 32 = 16KB, Xbox 360 up to 0x80+). Anything else means
+            // the superblock is corrupt and every following computation
+            // would be garbage.
+            if (_sectorsPerCluster == 0 || _sectorsPerCluster > 0x400 ||
+                (_sectorsPerCluster & (_sectorsPerCluster - 1)) != 0)
+            {
+                throw new FormatException($"Invalid sectors per cluster for {_partitionName}: {_sectorsPerCluster}");
+            }
+
             _bytesPerCluster = _sectorsPerCluster * Constants.SectorSize;
             _maxClusters = (uint)(_partitionLength / (long)_bytesPerCluster)
                 + Constants.ReservedClusters;
@@ -289,7 +357,10 @@ namespace FATX.FileSystem
             byte[] data = ReadCluster(cluster);
             long clusterOffset = ClusterToPhysicalOffset(cluster);
 
-            for (int i = 0; i < 256; i++)
+            // Cluster size varies between volumes, so do not assume 256
+            // entries (16KB clusters).
+            int direntsPerCluster = DirentsPerCluster;
+            for (int i = 0; i < direntsPerCluster; i++)
             {
                 DirectoryEntry dirent = new DirectoryEntry(this.Platform, data, (i * 0x40));
 
@@ -328,6 +399,15 @@ namespace FATX.FileSystem
 
                     foreach (uint cluster in chainMap)
                     {
+                        // Protect against corrupted file systems where a
+                        // directory points back at one of its ancestors,
+                        // which used to recurse until the stack overflowed.
+                        if (_visitedDirectoryClusters != null && !_visitedDirectoryClusters.Add(cluster))
+                        {
+                            Console.WriteLine($"Directory {dirent.FileName} references an already visited cluster {cluster}, skipping.");
+                            continue;
+                        }
+
                         List<DirectoryEntry> direntStream = ReadDirectoryStream(cluster);
 
                         dirent.AddChildren(direntStream);
@@ -345,7 +425,6 @@ namespace FATX.FileSystem
         /// <param name="origin"></param>
         public void SeekFileArea(long offset, SeekOrigin origin = SeekOrigin.Begin)
         {
-            // TODO: Check for invalid offset
             offset += FileAreaByteOffset + _partitionOffset;
             _reader.Seek(offset, origin);
         }
@@ -367,10 +446,26 @@ namespace FATX.FileSystem
         /// <returns></returns>
         public byte[] ReadCluster(uint cluster)
         {
-            var clusterOffset = ClusterToPhysicalOffset(cluster);
-            _reader.Seek(clusterOffset);
-            byte[] clusterData = new byte[_bytesPerCluster];
-            _reader.Read(clusterData, (int)_bytesPerCluster);
+            return ReadClusters(cluster, 1);
+        }
+
+        /// <summary>
+        /// Reads a run of consecutive clusters in one I/O request.
+        /// </summary>
+        public byte[] ReadClusters(uint firstCluster, int count)
+        {
+            if (firstCluster == 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(firstCluster), "Cluster indexes start at 1.");
+            }
+
+            var clusterOffset = ClusterToPhysicalOffset(firstCluster);
+            byte[] clusterData = new byte[(long)_bytesPerCluster * count];
+            lock (_reader)
+            {
+                _reader.Seek(clusterOffset);
+                _reader.Read(clusterData, clusterData.Length);
+            }
             return clusterData;
         }
 
@@ -382,20 +477,42 @@ namespace FATX.FileSystem
         public List<uint> GetClusterChain(DirectoryEntry dirent)
         {
             var firstCluster = dirent.FirstCluster;
-            List<uint> clusterChain = new List<uint>();
 
-            if (firstCluster == 0 || firstCluster > this.MaxClusters)
+            if (firstCluster == 0 || firstCluster >= this.MaxClusters)
             {
                 Console.WriteLine($" {dirent.GetFullPath()}: First cluster is invalid (FirstCluster={firstCluster} MaxClusters={this.MaxClusters})");
+                return new List<uint>();
+            }
+
+            if (dirent.IsDeleted())
+            {
+                return new List<uint> { firstCluster };
+            }
+
+            var chain = GetClusterChain(firstCluster);
+            if (chain == null)
+            {
+                // TODO: Warn user.
+                Console.WriteLine($"File {dirent.FileName} has a corrupt cluster chain!");
+                return new List<uint> { firstCluster };
+            }
+
+            return chain;
+        }
+
+        /// <summary>
+        /// Follows the file allocation table starting at <paramref name="firstCluster"/>.
+        /// </summary>
+        /// <returns>The cluster chain, or null if the chain is corrupt (out of range link, free link or a loop).</returns>
+        public List<uint> GetClusterChain(uint firstCluster)
+        {
+            List<uint> clusterChain = new List<uint>();
+            if (firstCluster == 0 || firstCluster >= _fileAllocationTable.Length)
+            {
                 return clusterChain;
             }
 
             clusterChain.Add(firstCluster);
-
-            if (dirent.IsDeleted())
-            {
-                return clusterChain;
-            }
 
             uint fatEntry = firstCluster;
             uint reservedIndexes = (_isFat16) ? Constants.Cluster16Reserved : Constants.ClusterReserved;
@@ -407,13 +524,19 @@ namespace FATX.FileSystem
                     break;
                 }
 
-                if (fatEntry == 0 || fatEntry > _fileAllocationTable.Length)
+                // NOTE: previously this used '>' which allowed an index equal
+                // to the table length through and crashed with an
+                // IndexOutOfRangeException.
+                if (fatEntry == 0 || fatEntry >= _fileAllocationTable.Length)
                 {
-                    // TODO: Warn user.
-                    Console.WriteLine($"File {dirent.FileName} has a corrupt cluster chain!");
-                    clusterChain = new List<uint>(1);
-                    clusterChain.Add(firstCluster);
-                    return clusterChain;
+                    return null;
+                }
+
+                // A chain can never be longer than the number of clusters,
+                // anything longer contains a loop.
+                if (clusterChain.Count >= _fileAllocationTable.Length)
+                {
+                    return null;
                 }
 
                 // Get next cluster.
@@ -442,7 +565,7 @@ namespace FATX.FileSystem
         public long ClusterToPhysicalOffset(uint cluster)
         {
             var physicalOffset = ByteOffsetToPhysicalOffset(FileAreaByteOffset);
-            long clusterOffset = (long)_bytesPerCluster * (long)(cluster - 1);
+            long clusterOffset = (long)_bytesPerCluster * ((long)cluster - 1);
             return (physicalOffset + clusterOffset);
         }
 
@@ -478,9 +601,10 @@ namespace FATX.FileSystem
             // Count number of used clusters
             long clustersUsed = 0;
 
-            foreach (var cluster in FileAllocationTable)
+            // Entry 0 is the media descriptor, not a data cluster.
+            for (long i = 1; i < FileAllocationTable.Length; i++)
             {
-                if (cluster != Constants.ClusterAvailable)
+                if (FileAllocationTable[i] != Constants.ClusterAvailable)
                 {
                     clustersUsed++;
                 }

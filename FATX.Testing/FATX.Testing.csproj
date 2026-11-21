@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <!-- Builders for synthetic FATX images and Xbox executables, used by the
+       unit tests and by the benchmark tool. -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FATX\FATX.csproj" />
+  </ItemGroup>
+
+</Project>

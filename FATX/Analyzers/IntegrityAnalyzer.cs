@@ -29,9 +29,21 @@ namespace FATX.Analyzers
 
         private void UpdateClusters(DatabaseFile databaseFile)
         {
+            if (databaseFile.ClusterChain == null)
+                return;
+
             foreach (var cluster in databaseFile.ClusterChain)
             {
-                var occupants = clusterMap[(uint)cluster];
+                // Ignore clusters outside of the volume instead of crashing.
+                if (cluster == 0 || cluster >= volume.MaxClusters)
+                    continue;
+
+                if (!clusterMap.TryGetValue(cluster, out var occupants))
+                {
+                    occupants = new List<DatabaseFile>(1);
+                    clusterMap[cluster] = occupants;
+                }
+
                 if (!occupants.Contains(databaseFile))
                     occupants.Add(databaseFile);
             }
@@ -39,11 +51,10 @@ namespace FATX.Analyzers
 
         private void UpdateClusterMap()
         {
-            clusterMap = new Dictionary<uint, List<DatabaseFile>>((int)volume.MaxClusters);
-            for (uint i = 0; i < volume.MaxClusters; i++)
-            {
-                clusterMap[i] = new List<DatabaseFile>();
-            }
+            // Sparse map: only clusters that are actually claimed by a file
+            // get an entry. Pre-allocating one list per cluster used several
+            // gigabytes of memory on large Xbox 360 drives.
+            clusterMap = new Dictionary<uint, List<DatabaseFile>>();
 
             foreach (var pair in database.GetFiles())
             {
@@ -94,11 +105,14 @@ namespace FATX.Analyzers
 
             // for each cluster used by this dirent, check if other dirents are
             // also claiming it.
+            if (databaseFile.ClusterChain == null)
+                return collidingClusters;
+
             foreach (var cluster in databaseFile.ClusterChain)
             {
-                if (clusterMap[(uint)cluster].Count > 1)
+                if (clusterMap.TryGetValue(cluster, out var occupants) && occupants.Count > 1)
                 {
-                    collidingClusters.Add((uint)cluster);
+                    collidingClusters.Add(cluster);
                 }
             }
 
@@ -110,7 +124,8 @@ namespace FATX.Analyzers
             var dirent = databaseFile.GetDirent();
             foreach (var cluster in collisions)
             {
-                var clusterEnts = clusterMap[(uint)cluster];
+                if (!clusterMap.TryGetValue(cluster, out var clusterEnts))
+                    continue;
                 foreach (var ent in clusterEnts)
                 {
                     var entDirent = ent.GetDirent();
@@ -121,7 +136,17 @@ namespace FATX.Analyzers
                         continue;
                     }
 
-                    if (dirent.LastAccessTime.AsDateTime() < entDirent.LastAccessTime.AsDateTime())
+                    // An active file sharing the cluster always wins: its data
+                    // is what is physically there now.
+                    if (!ent.IsDeleted)
+                    {
+                        return false;
+                    }
+
+                    // Use the last write time (when data was written). The
+                    // last access time is updated on reads and says nothing
+                    // about who owns the data.
+                    if (dirent.LastWriteTime.AsDateTime() < entDirent.LastWriteTime.AsDateTime())
                     {
                         return false;
                     }
@@ -155,10 +180,12 @@ namespace FATX.Analyzers
 
             if (!databaseFile.IsDeleted)
             {
-                if (!dirent.IsDeleted())
-                {
-                    databaseFile.SetRanking((0));
-                }
+                databaseFile.SetRanking((0));
+            }
+            else if (databaseFile.ClusterChain == null || (databaseFile.ClusterChain.Count == 0 && databaseFile.FileSize > 0))
+            {
+                // Location of the data is unknown (first cluster was zeroed).
+                databaseFile.SetRanking((4));
             }
             else
             {
@@ -179,9 +206,8 @@ namespace FATX.Analyzers
                     else
                     {
                         // File was predicted to be overwritten
-                        var numClusters = (int)(((dirent.FileSize + (this.volume.BytesPerCluster - 1)) &
-                            ~(this.volume.BytesPerCluster - 1)) / this.volume.BytesPerCluster);
-                        if (collisions.Count != numClusters)
+                        var numClusters = databaseFile.ClusterChain.Count;
+                        if (collisions.Count < numClusters)
                         {
                             // Not every cluster was overwritten
                             databaseFile.SetRanking((3));
@@ -204,20 +230,18 @@ namespace FATX.Analyzers
             }
         }
 
+        private static readonly List<DatabaseFile> NoOccupants = new List<DatabaseFile>();
+
         public List<DatabaseFile> GetClusterOccupants(uint cluster)
         {
-            List<DatabaseFile> occupants;
-
-            if (clusterMap.ContainsKey(cluster))
+            if (clusterMap.TryGetValue(cluster, out var occupants))
             {
-                occupants = clusterMap[cluster];
-            }
-            else
-            {
-                occupants = null;
+                return occupants;
             }
 
-            return occupants;
+            // Keep the old contract: null for clusters outside of the volume,
+            // an empty list for unused clusters.
+            return cluster < volume.MaxClusters ? NoOccupants : null;
         }
     }
 }

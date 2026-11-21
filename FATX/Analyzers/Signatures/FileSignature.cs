@@ -34,11 +34,14 @@ namespace FATX.Analyzers.Signatures
             {
                 if (_fileName == null)
                 {
-                    if (!_counters.ContainsKey(this.GetType().Name))
+                    lock (_counters)
                     {
-                        _counters[this.GetType().Name] = 1;
+                        if (!_counters.ContainsKey(this.GetType().Name))
+                        {
+                            _counters[this.GetType().Name] = 1;
+                        }
+                        _fileName = this.GetType().Name + (_counters[this.GetType().Name]++).ToString();
                     }
-                    _fileName = this.GetType().Name + (_counters[this.GetType().Name]++).ToString();
                 }
 
                 return _fileName;

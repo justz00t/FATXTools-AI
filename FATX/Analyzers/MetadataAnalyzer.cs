@@ -23,6 +23,11 @@ namespace FATX.Analyzers
                                            "!#$%&\'()-.@[]^_`{}~ " +
                                            "\xff";
 
+        /// <summary>
+        /// Number of clusters read per I/O request while scanning.
+        /// </summary>
+        private const int ClustersPerRead = 64;
+
         public MetadataAnalyzer(Volume volume, long interval, long length)
         {
             if (length == 0 || length > volume.FileAreaLength)
@@ -30,11 +35,27 @@ namespace FATX.Analyzers
                 length = volume.FileAreaLength;
             }
 
+            // Directory entries are always cluster aligned, any other
+            // interval would make the cluster math below wrong.
+            if (interval <= 0 || interval != volume.BytesPerCluster)
+            {
+                interval = volume.BytesPerCluster;
+            }
+
             _volume = volume;
             _interval = interval;
             _length = length;
 
-            _currentYear = DateTime.Now.Year;
+            // Allow one year of slack for consoles whose clock was set ahead.
+            _currentYear = DateTime.Now.Year + 1;
+        }
+
+        /// <summary>
+        /// Number of clusters that will be scanned. Use this as the progress maximum.
+        /// </summary>
+        public long ClusterCount
+        {
+            get { return Math.Min(_length / _interval, _volume.ClusterCount); }
         }
 
         public List<DirectoryEntry> Analyze(CancellationToken cancellationToken, IProgress<int> progress)
@@ -52,38 +73,59 @@ namespace FATX.Analyzers
         /// <summary>
         /// Searches for dirent's.
         /// </summary>
-        /// <param name="worker"></param>
         private void RecoverMetadata(CancellationToken cancellationToken, IProgress<int> progress)
         {
-            var maxClusters = _length / _interval;
-            for (uint cluster = 1; cluster < maxClusters; cluster++)
-            {
-                var data = _volume.ReadCluster(cluster);
-                var clusterOffset = (cluster - 1) * _interval;
-                for (int i = 0; i < 256; i++)
-                {
-                    var direntOffset = i * 0x40;
-                    try
-                    {
-                        DirectoryEntry dirent = new DirectoryEntry(_volume.Platform, data, direntOffset);
+            // Valid cluster indexes are 1..maxClusters (inclusive). The old
+            // loop used '<' and never scanned the last cluster.
+            var maxClusters = ClusterCount;
+            var direntsPerCluster = _volume.DirentsPerCluster;
+            var bytesPerCluster = (int)_volume.BytesPerCluster;
+            long lastReport = 0;
 
-                        if (IsValidDirent(dirent))
-                        {
-                            Console.WriteLine(string.Format("0x{0:X8}: {1}", clusterOffset + direntOffset, dirent.FileName));
-                            dirent.Cluster = cluster;
-                            dirent.Offset = _volume.ClusterToPhysicalOffset(cluster) + direntOffset;
-                            _dirents.Add(dirent);
-                        }
-                    }
-                    catch (Exception e)
+            for (long first = 1; first <= maxClusters; first += ClustersPerRead)
+            {
+                var count = (int)Math.Min(ClustersPerRead, maxClusters - first + 1);
+                var data = _volume.ReadClusters((uint)first, count);
+
+                for (int c = 0; c < count; c++)
+                {
+                    var cluster = (uint)(first + c);
+                    var clusterBase = c * bytesPerCluster;
+
+                    for (int i = 0; i < direntsPerCluster; i++)
                     {
-                        Console.WriteLine(e.Message);
-                        Console.WriteLine(e.StackTrace);
+                        var direntOffset = i * 0x40;
+                        var bufferOffset = clusterBase + direntOffset;
+
+                        // Cheap pre-filter before allocating a DirectoryEntry.
+                        if (!IsValidFileNameLength(data[bufferOffset]))
+                            continue;
+
+                        try
+                        {
+                            DirectoryEntry dirent = new DirectoryEntry(_volume.Platform, data, bufferOffset);
+
+                            if (IsValidDirent(dirent))
+                            {
+                                dirent.Cluster = cluster;
+                                dirent.Offset = _volume.ClusterToPhysicalOffset(cluster) + direntOffset;
+                                _dirents.Add(dirent);
+                            }
+                        }
+                        catch (Exception e)
+                        {
+                            Console.WriteLine(e.Message);
+                            Console.WriteLine(e.StackTrace);
+                        }
                     }
                 }
 
-                if (cluster % 0x100 == 0)
-                    progress?.Report((int)cluster);
+                var done = first + count - 1;
+                if (done - lastReport >= 0x100)
+                {
+                    progress?.Report((int)done);
+                    lastReport = done;
+                }
 
                 if (cancellationToken.IsCancellationRequested)
                 {
@@ -180,13 +222,63 @@ namespace FATX.Analyzers
         /// <summary>
         /// Validate FileNameBytes.
         /// </summary>
-        /// <param name="bytes"></param>
-        /// <returns></returns>
-        private bool IsValidFileNameBytes(byte[] bytes)
+        /// <param name="bytes">The 42 file name bytes.</param>
+        /// <param name="fileNameLength">The file name length byte (0xE5 when deleted).</param>
+        private bool IsValidFileNameBytes(byte[] bytes, uint fileNameLength)
         {
-            foreach (byte b in bytes)
+            int nameLength;
+            if (fileNameLength == Constants.DirentDeleted)
             {
-                if (VALID_CHARS.IndexOf((char)b) == -1)
+                // Deleted entries lose their length byte. The name runs up
+                // to the 0xFF padding.
+                // to the 0xFF padding (some Xbox 360 kernels pad with 0x00).
+                nameLength = Array.IndexOf(bytes, (byte)0xff);
+                if (nameLength == -1)
+                    nameLength = bytes.Length;
+                var nul = Array.IndexOf(bytes, (byte)0x00, 0, nameLength);
+                if (nul != -1)
+                    nameLength = nul;
+            }
+            else
+            {
+                nameLength = (int)fileNameLength;
+            }
+
+            if (nameLength == 0)
+            {
+                return false;
+            }
+
+            // Every character of the name itself must be valid (and not padding).
+            for (int i = 0; i < nameLength; i++)
+            {
+                if (bytes[i] == 0xff || VALID_CHARS.IndexOf((char)bytes[i]) == -1)
+                {
+                    return false;
+                }
+            }
+
+            // Names consisting only of dots or spaces are not valid file names.
+            bool hasNameCharacter = false;
+            for (int i = 0; i < nameLength; i++)
+            {
+                if (bytes[i] != (byte)'.' && bytes[i] != (byte)' ')
+                {
+                    hasNameCharacter = true;
+                    break;
+                }
+            }
+            if (!hasNameCharacter)
+            {
+                return false;
+            }
+
+            // The rest is normally 0xFF padding, but may contain leftovers of
+            // a previous (longer) name after a rename. Anything else means
+            // this is not a directory entry.
+            for (int i = nameLength; i < bytes.Length; i++)
+            {
+                if (bytes[i] != 0x00 && VALID_CHARS.IndexOf((char)bytes[i]) == -1)
                 {
                     return false;
                 }
@@ -195,7 +287,10 @@ namespace FATX.Analyzers
             return true;
         }
 
-        private const int ValidAttributes = 55;
+        /// <summary>
+        /// ReadOnly | Hidden | System | Directory | Archive
+        /// </summary>
+        private const int ValidAttributes = 0x37;
 
         /// <summary>
         /// Validate FileAttributes.
@@ -204,17 +299,10 @@ namespace FATX.Analyzers
         /// <returns></returns>
         private bool IsValidAttributes(FileAttribute attributes)
         {
-            if (attributes == 0)
-            {
-                return true;
-            }
-
-            if (!Enum.IsDefined(typeof(FileAttribute), attributes))
-            {
-                return false;
-            }
-
-            return true;
+            // NOTE: The attributes are flags. Enum.IsDefined() rejected any
+            // combination (e.g. Directory|Archive or Hidden|System), which
+            // caused real deleted entries to be skipped.
+            return ((int)attributes & ~ValidAttributes) == 0;
         }
 
         private int[] MaxDays =
@@ -286,7 +374,7 @@ namespace FATX.Analyzers
         /// <returns></returns>
         private bool IsValidFirstCluster(uint firstCluster)
         {
-            if (firstCluster > _volume.MaxClusters)
+            if (firstCluster >= _volume.MaxClusters)
             {
                 return false;
             }
@@ -308,7 +396,7 @@ namespace FATX.Analyzers
         /// <returns></returns>
         private bool IsValidFileNameLength(uint fileNameLength)
         {
-            if (fileNameLength == 0x00 || fileNameLength == 0x01 || fileNameLength == 0xff)
+            if (fileNameLength == 0x00 || fileNameLength == 0xff)
             {
                 return false;
             }
@@ -338,7 +426,13 @@ namespace FATX.Analyzers
                 return false;
             }
 
-            if (!IsValidFileNameBytes(dirent.FileNameBytes))
+            if (!IsValidFileNameBytes(dirent.FileNameBytes, dirent.FileNameLength))
+            {
+                return false;
+            }
+
+            // A file can never be larger than the volume it lives on.
+            if (dirent.FileSize > _volume.FileAreaLength)
             {
                 return false;
             }

@@ -7,6 +7,10 @@ Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "FATX", "FATX\FATX.csproj", 
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FATXTools", "FATXTools\FATXTools.csproj", "{91C6BEA2-9E5C-4ADA-81BA-CA47063DFCF0}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FATX.Tests", "FATX.Tests\FATX.Tests.csproj", "{DAA50EAC-AA32-4D83-AB8F-9E3A2CC81AC3}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "FATX.Testing", "FATX.Testing\FATX.Testing.csproj", "{95261258-40D9-45F5-A328-B54E9BAC0112}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -21,6 +25,14 @@ Global
 		{91C6BEA2-9E5C-4ADA-81BA-CA47063DFCF0}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{91C6BEA2-9E5C-4ADA-81BA-CA47063DFCF0}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{91C6BEA2-9E5C-4ADA-81BA-CA47063DFCF0}.Release|Any CPU.Build.0 = Release|Any CPU
+		{DAA50EAC-AA32-4D83-AB8F-9E3A2CC81AC3}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{DAA50EAC-AA32-4D83-AB8F-9E3A2CC81AC3}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{DAA50EAC-AA32-4D83-AB8F-9E3A2CC81AC3}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{DAA50EAC-AA32-4D83-AB8F-9E3A2CC81AC3}.Release|Any CPU.Build.0 = Release|Any CPU
+		{95261258-40D9-45F5-A328-B54E9BAC0112}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{95261258-40D9-45F5-A328-B54E9BAC0112}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{95261258-40D9-45F5-A328-B54E9BAC0112}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{95261258-40D9-45F5-A328-B54E9BAC0112}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
