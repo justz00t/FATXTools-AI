@@ -200,6 +200,7 @@ namespace FATX.AI
         private static readonly JsonSerializerOptions JsonOptions = new JsonSerializerOptions
         {
             DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull,
+            Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
         };
 
         // ----- argument helpers -----

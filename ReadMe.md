@@ -29,12 +29,44 @@ Download: [Github Releases](https://github.com/aerosoul94/FATXTools/releases)
 
 **Bug fixes** (selection): crash on volumes whose cluster size is not 16KB, Xbox 360 directory entries corrupting the shared cluster buffer, out-of-range FAT links and FAT loops, directory cycles that hung the tree view and recovery, chains built from cluster 0 or past the end of the partition (crash in the integrity analyzer), gigabytes of memory used by the integrity analyzer on large drives, raw device reads straddling a sector boundary, recovered files keeping stale bytes when overwriting a larger file, deleted and re-created files with the same name overwriting each other, invalid Windows file names, the log window freezing the UI, carver reading past the end of the partition.
 
-**Claude assistant**
-* *Claude → Recovery Assistant...* in the GUI, or `fatxtools ai <image> "<request>"` on the command line, lets Claude run the analysis: find deleted game builds, verify XEX/XBE files, carve lost executables and recover them into organized folders. Requires an Anthropic API key (`ANTHROPIC_API_KEY` or entered in the dialog). Tools run locally; only small JSON summaries (names, sizes, header fields) are sent to the API.
+**Claude assistant (MCP, no API key needed)**
+* `fatxtools mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server. Add it to Claude Desktop or Claude Code and just ask, e.g. *"Open E:\Xbox\xnaxdk.img, find deleted game builds and recover the ones whose executables verify."* Claude runs on your normal Claude subscription; the tools run locally and only read the image. See [MCP setup](#mcp-setup).
+* Optional, with an Anthropic API key: *Claude → Recovery Assistant...* in the GUI, or `fatxtools ai <image> "<request>"` on the command line, lets Claude run the analysis: find deleted game builds, verify XEX/XBE files, carve lost executables and recover them into organized folders. Requires an Anthropic API key (`ANTHROPIC_API_KEY` or entered in the dialog). Tools run locally; only small JSON summaries (names, sizes, header fields) are sent to the API.
 
 **Command line**: `fatxtools info|ls|analyze|recover|carve|identify|ai` (run `dotnet run --project FATXTools.Cli -- --help`).
 
 **Benchmark**: `bench/run-benchmark.ps1 -Image <image>` compares the original version with this one on your own image (see `bench/README.md`).
+
+# MCP setup
+
+Build a standalone executable (or download `fatxtools-win-x64` from the CI artifacts):
+
+```powershell
+dotnet publish FATXTools.Cli -c Release -r win-x64 --self-contained -p:PublishSingleFile=true -o publish
+```
+
+**Claude Desktop**: Settings → Developer → Edit Config, add the server to `claude_desktop_config.json` and restart Claude:
+
+```json
+{
+  "mcpServers": {
+    "fatxtools": {
+      "command": "C:\\Tools\\FATXTools\\fatxtools.exe",
+      "args": ["mcp", "--out", "D:\\Recovered"]
+    }
+  }
+}
+```
+
+**Claude Code**:
+
+```powershell
+claude mcp add fatxtools -- C:\Tools\FATXTools\fatxtools.exe mcp --out D:\Recovered
+```
+
+Optional arguments: `--image <path>` opens an image at start-up (otherwise Claude calls `open_image` with the path you give it), `--out <dir>` sets where recovered files go (default `Documents\FATXTools Recovered`).
+
+Tools: `open_image`, `list_partitions`, `run_metadata_analysis`, `set_chain_strategy`, `list_files`, `find_executables`, `find_game_builds`, `inspect_file`, `run_file_carver`, `list_carved`, `hex_dump`, `recover_files`. Images are opened read-only and files are only written below the output folder. Scanning a large drive can take a few minutes per call.
 
 # Screenshots
 ![](Screenshots/FATXTools_2020-10-26_11-03-21.png)

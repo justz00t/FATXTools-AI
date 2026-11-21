@@ -32,6 +32,9 @@ Usage:
       Carve files by signature; --out saves them.
   fatxtools identify <file> [--verify]
       Identify an Xbox file (XEX/XBE/STFS/...) and verify its checksums.
+  fatxtools mcp [--image <image>] [--out <dir>]
+      Run as an MCP server (stdio) so Claude Desktop / Claude Code can use the
+      recovery tools with your Claude subscription. No API key needed.
   fatxtools ai <image> [<request>] [--model <id>] [--out <dir>] [--effort low|medium|high|xhigh|max]
       Let Claude drive the analysis. Requires ANTHROPIC_API_KEY.
       Without a request, starts an interactive session.
@@ -49,6 +52,26 @@ Options:
             }
 
             var opts = Options.Parse(args.Skip(1).ToArray());
+
+            if (args[0] == "mcp")
+            {
+                // stdout carries the protocol; nothing else may be written to it.
+                var stdout = new StreamWriter(Console.OpenStandardOutput(), new System.Text.UTF8Encoding(false)) { AutoFlush = true };
+                var stdin = new StreamReader(Console.OpenStandardInput(), System.Text.Encoding.UTF8);
+                Console.SetOut(TextWriter.Null);
+                try
+                {
+                    var server = new McpServer(stdin, stdout, opts.Get("image", null), opts.Get("out", null));
+                    await server.RunAsync();
+                    return 0;
+                }
+                catch (Exception e)
+                {
+                    Console.Error.WriteLine($"fatxtools mcp: {e.Message}");
+                    return 1;
+                }
+            }
+
             var log = Console.Out;
             if (opts.Has("quiet") || args[0] == "ai")
             {
