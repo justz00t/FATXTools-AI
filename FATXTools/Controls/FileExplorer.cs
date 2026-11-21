@@ -457,7 +457,8 @@ namespace FATXTools.Controls
 
             private void WriteFile(string path, DirectoryEntry dirent, List<uint> chainMap)
             {
-                using (FileStream outFile = File.OpenWrite(path))
+                // FileMode.Create truncates existing files (File.OpenWrite left stale trailing bytes).
+                using (FileStream outFile = new FileStream(path, FileMode.Create, FileAccess.Write))
                 {
                     uint bytesLeft = dirent.FileSize;
 
@@ -517,7 +518,7 @@ namespace FATXTools.Controls
 
             private void SaveFile(string path, DirectoryEntry dirent)
             {
-                path = path + "\\" + dirent.FileName;
+                path = Path.Combine(path, FATX.Recovery.FileRecoverer.SanitizeFileName(dirent.FileName));
                 Console.WriteLine(path);
 
                 // Report where we are at
@@ -541,7 +542,7 @@ namespace FATXTools.Controls
 
             private void SaveDirectory(string path, DirectoryEntry dirent)
             {
-                path = path + "\\" + dirent.FileName;
+                path = Path.Combine(path, FATX.Recovery.FileRecoverer.SanitizeFileName(dirent.FileName));
                 Console.WriteLine(path);
 
                 // Report where we are at
@@ -568,7 +569,7 @@ namespace FATXTools.Controls
 
             private void SaveDeleted(string path, DirectoryEntry dirent)
             {
-                path = path + "\\" + dirent.FileName;
+                path = Path.Combine(path, FATX.Recovery.FileRecoverer.SanitizeFileName(dirent.FileName));
 
                 currentFile = dirent.GetFullPath();
 

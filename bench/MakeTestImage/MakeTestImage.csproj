@@ -1,0 +1,12 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Generates a synthetic Xbox 360 retail disk image with a realistic mix of
+       active, deleted and fragmented files (game builds, saves, packages). -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>disable</Nullable>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../../FATX.Testing/FATX.Testing.csproj" />
+  </ItemGroup>
+</Project>

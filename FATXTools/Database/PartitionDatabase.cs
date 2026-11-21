@@ -232,7 +232,7 @@ namespace FATXTools.Database
                     clusterChain.Add(clusterIndex.GetUInt32());
                 }
 
-                databaseFile.ClusterChain = clusterChain;
+                databaseFile.SetCustomClusterChain(clusterChain);
             }
 
             return databaseFile;

@@ -222,192 +222,20 @@ namespace FATXTools.Database
         }
 
         /// <summary>
-        /// Number of clusters needed to store <paramref name="fileSize"/> bytes.
-        /// </summary>
-        private long ClustersForSize(long fileSize)
-        {
-            long bytesPerCluster = volume.BytesPerCluster;
-            return (fileSize + bytesPerCluster - 1) / bytesPerCluster;
-        }
-
-        /// <summary>
-        /// Generates a contiguous cluster chain for a deleted file.
-        /// </summary>
-        /// <param name="dirent">The deleted file.</param>
-        /// <returns></returns>
-        private List<uint> GenerateArtificialClusterChain(DirectoryEntry dirent)
-        {
-            var firstCluster = dirent.FirstCluster;
-
-            // A zeroed or out of range first cluster means that the data
-            // location is unknown. The old code happily produced a chain
-            // starting at cluster 0, which maps in front of the file area
-            // (or wraps around), and chains running off the end of the
-            // volume which crashed the integrity analyzer.
-            if (firstCluster == 0 || firstCluster > volume.ClusterCount)
-            {
-                return new List<uint>();
-            }
-
-            if (dirent.IsDirectory())
-            {
-                // NOTE: Directories with more than one cluster worth of entries would have multiple clusters
-                return new List<uint>() { firstCluster };
-            }
-
-            var clusterCount = Math.Max(1, ClustersForSize(dirent.FileSize));
-            var lastCluster = Math.Min((long)volume.ClusterCount, firstCluster + clusterCount - 1);
-
-            var chain = new List<uint>((int)(lastCluster - firstCluster + 1));
-            for (long cluster = firstCluster; cluster <= lastCluster; cluster++)
-            {
-                chain.Add((uint)cluster);
-            }
-
-            return chain;
-        }
-
-        /// <summary>
-        /// Index of the clusters owned by the active file system, used to
-        /// decide which clusters a deleted file could not have used.
-        /// </summary>
-        private class ActiveExtentIndex
-        {
-            private struct Extent
-            {
-                public uint Start;
-                public uint End;          // inclusive
-                public DateTime Created;  // creation time of the owner
-            }
-
-            private readonly Extent[] extents;
-
-            public ActiveExtentIndex(Volume volume, IEnumerable<DatabaseFile> activeFiles)
-            {
-                var list = new List<Extent>();
-
-                // The root directory is created when the volume is formatted.
-                var rootChain = volume.GetClusterChain(volume.RootDirFirstCluster);
-                if (rootChain != null)
-                    AddChain(list, rootChain, DateTime.MinValue);
-
-                foreach (var file in activeFiles)
-                {
-                    if (file.ClusterChain == null || file.ClusterChain.Count == 0)
-                        continue;
-                    AddChain(list, file.ClusterChain, file.CreationTime.AsDateTime());
-                }
-
-                extents = list.OrderBy(e => e.Start).ToArray();
-            }
-
-            private static void AddChain(List<Extent> list, List<uint> chain, DateTime created)
-            {
-                uint start = chain[0];
-                uint prev = start;
-                for (int i = 1; i < chain.Count; i++)
-                {
-                    var c = chain[i];
-                    if (c == prev + 1)
-                    {
-                        prev = c;
-                        continue;
-                    }
-
-                    list.Add(new Extent { Start = start, End = prev, Created = created });
-                    start = prev = c;
-                }
-                list.Add(new Extent { Start = start, End = prev, Created = created });
-            }
-
-            /// <summary>
-            /// Finds the active extent that contains <paramref name="cluster"/>.
-            /// </summary>
-            public bool TryFind(uint cluster, out uint extentEnd, out DateTime created)
-            {
-                int lo = 0, hi = extents.Length - 1;
-                while (lo <= hi)
-                {
-                    int mid = lo + ((hi - lo) >> 1);
-                    if (extents[mid].Start <= cluster)
-                        lo = mid + 1;
-                    else
-                        hi = mid - 1;
-                }
-
-                // hi is the last extent starting at or before the cluster.
-                // Extents may overlap when the active file system is
-                // corrupted, so look back a few entries.
-                for (int i = hi; i >= 0 && i > hi - 8; i--)
-                {
-                    if (extents[i].Start <= cluster && cluster <= extents[i].End)
-                    {
-                        extentEnd = extents[i].End;
-                        created = extents[i].Created;
-                        return true;
-                    }
-                }
-
-                extentEnd = 0;
-                created = default;
-                return false;
-            }
-        }
-
-        /// <summary>
-        /// Generates a cluster chain for a deleted file that skips clusters
-        /// which were already in use by older active files.
-        /// </summary>
-        private List<uint> GenerateSkipOlderAllocatedChain(DirectoryEntry dirent, ActiveExtentIndex index)
-        {
-            var firstCluster = dirent.FirstCluster;
-            if (firstCluster == 0 || firstCluster > volume.ClusterCount)
-            {
-                return new List<uint>();
-            }
-
-            if (dirent.IsDirectory())
-            {
-                return new List<uint>() { firstCluster };
-            }
-
-            var clusterCount = Math.Max(1, ClustersForSize(dirent.FileSize));
-            var created = dirent.CreationTime.AsDateTime();
-            var maxCluster = volume.ClusterCount;
-
-            var chain = new List<uint>((int)Math.Min(clusterCount, 1 << 20));
-            chain.Add(firstCluster);
-
-            long cluster = (long)firstCluster + 1;
-            while (chain.Count < clusterCount && cluster <= maxCluster)
-            {
-                if (index.TryFind((uint)cluster, out var extentEnd, out var ownerCreated) &&
-                    ownerCreated <= created)
-                {
-                    // This run of clusters belonged to a file that existed
-                    // before the deleted file was created; the allocator
-                    // could not have handed them out. Jump over it.
-                    cluster = (long)extentEnd + 1;
-                    continue;
-                }
-
-                chain.Add((uint)cluster);
-                cluster++;
-            }
-
-            return chain;
-        }
-
-        /// <summary>
         /// (Re)generates cluster chains for every deleted file whose chain was
         /// not explicitly set by the user or loaded from a database.
         /// </summary>
         public void RebuildDeletedClusterChains()
         {
-            ActiveExtentIndex index = null;
+            var predictor = new ChainPredictor(volume);
             if (ChainStrategy == ChainStrategy.SkipOlderAllocated)
             {
-                index = new ActiveExtentIndex(volume, files.Values.Where(f => !f.IsDeleted));
+                foreach (var f in files.Values)
+                {
+                    if (!f.IsDeleted)
+                        predictor.AddActiveChain(f.ClusterChain, f.CreationTime.AsDateTime(), f);
+                }
+                predictor.Seal();
             }
 
             foreach (var file in files.Values)
@@ -415,9 +243,9 @@ namespace FATXTools.Database
                 if (!file.IsDeleted || file.HasCustomClusterChain)
                     continue;
 
-                file.ClusterChain = (index != null)
-                    ? GenerateSkipOlderAllocatedChain(file.GetDirent(), index)
-                    : GenerateArtificialClusterChain(file.GetDirent());
+                var d = file.GetDirent();
+                file.ClusterChain = predictor.Predict(d.FirstCluster, d.FileSize, d.IsDirectory(),
+                    d.CreationTime.AsDateTime(), ChainStrategy);
             }
         }
 
@@ -463,7 +291,8 @@ namespace FATXTools.Database
             {
                 // A contiguous chain for now; Update() refines it once all
                 // files are known.
-                databaseFile.ClusterChain = GenerateArtificialClusterChain(dirent);
+                databaseFile.ClusterChain = new ChainPredictor(volume).Predict(dirent.FirstCluster, dirent.FileSize,
+                    dirent.IsDirectory(), dirent.CreationTime.AsDateTime(), ChainStrategy.Contiguous);
             }
             else
             {

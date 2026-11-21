@@ -100,3 +100,19 @@ namespace FATX.Tests
         }
     }
 }
+
+namespace FATX.Tests
+{
+    public class SizeCheckTests
+    {
+        [Fact]
+        public void OverwrittenFileIsNotReportedAsVerified()
+        {
+            var xbe = ExecutableBuilders.BuildXbe("other.exe", 1, "Other", new[] { 0x2000 });
+            // The directory entry of the deleted file said it was much larger.
+            var info = FormatDetector.Identify(new ArraySource(xbe), true, xbe.Length + 0x10000);
+            Assert.Equal(VerificationStatus.Failed, info.Verification);
+            Assert.Equal(VerificationStatus.Verified, FormatDetector.Identify(new ArraySource(xbe), true, xbe.Length).Verification);
+        }
+    }
+}

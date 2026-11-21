@@ -129,7 +129,7 @@ namespace FATX.Recovery
 
                     if (VerifyFormats)
                     {
-                        result.Format = FormatDetector.Identify(source, true);
+                        result.Format = FormatDetector.Identify(source, true, file.FileSize);
                     }
 
                     SetFileTimes(path, file);

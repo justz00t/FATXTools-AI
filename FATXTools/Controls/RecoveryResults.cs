@@ -302,7 +302,7 @@ namespace FATXTools
                     recoverTask = new RecoveryTask(this._volume, cancellationToken, progress);
                     foreach (var cluster in clusters)
                     {
-                        string clusterDir = path + "\\" + cluster.Key;
+                                string clusterDir = Path.Combine(path, cluster.Key);
 
                         Directory.CreateDirectory(clusterDir);
 
@@ -580,19 +580,12 @@ namespace FATXTools
 
             private void WriteFile(string path, DatabaseFile databaseFile)
             {
-                using (FileStream outFile = File.OpenWrite(path))
+                // FileMode.Create truncates existing files (File.OpenWrite left
+                // stale trailing bytes). Reads follow the cluster chain only.
+                using (FileStream outFile = new FileStream(path, FileMode.Create, FileAccess.Write))
                 {
-                    uint bytesLeft = databaseFile.FileSize;
-
-                    foreach (uint cluster in databaseFile.ClusterChain)
-                    {
-                        byte[] clusterData = this.volume.ReadCluster(cluster);
-
-                        var writeSize = Math.Min(bytesLeft, this.volume.BytesPerCluster);
-                        outFile.Write(clusterData, 0, (int)writeSize);
-
-                        bytesLeft -= writeSize;
-                    }
+                    var source = new FATX.Formats.ClusterChainSource(this.volume, databaseFile.ClusterChain, databaseFile.FileSize);
+                    FATX.Formats.ByteSourceExtensions.CopyTo(source, outFile, 0, source.Length);
                 }
             }
 
@@ -641,8 +634,7 @@ namespace FATXTools
 
             private void SaveDirectory(DatabaseFile databaseFile, string path)
             {
-                path = path + "\\" + databaseFile.FileName;
-                //Console.WriteLine($"{path}");
+                path = Path.Combine(path, FATX.Recovery.FileRecoverer.SanitizeFileName(databaseFile.FileName));
 
                 currentFile = databaseFile.FileName;
                 progress.Report(numSaved++);
@@ -665,13 +657,15 @@ namespace FATXTools
 
             private void SaveFile(DatabaseFile databaseFile, string path)
             {
-                path = path + "\\" + databaseFile.FileName;
-                //Console.WriteLine($"{path}");
+                // Deleted and re-created files often share a name in the same
+                // folder; give each its own file instead of overwriting.
+                path = FATX.Recovery.FileRecoverer.UniquePath(
+                    Path.Combine(path, FATX.Recovery.FileRecoverer.SanitizeFileName(databaseFile.FileName)));
 
                 currentFile = databaseFile.FileName;
                 progress.Report(numSaved++);
 
-                volume.SeekToCluster(databaseFile.FirstCluster);
+                cancellationToken.ThrowIfCancellationRequested();
 
                 TryIOOperation(() =>
                 {
@@ -882,7 +876,7 @@ namespace FATXTools
                     ClusterChainDialog dialog = new ClusterChainDialog(this._volume, file);
                     if (dialog.ShowDialog() == DialogResult.OK)
                     {
-                        file.ClusterChain = dialog.NewClusterChain;
+                        file.SetCustomClusterChain(dialog.NewClusterChain);
 
                         NotifyDatabaseChanged?.Invoke(null, null);
 
@@ -906,8 +900,7 @@ namespace FATXTools
                 case NodeType.Dirent:
                     DatabaseFile databaseFile = (DatabaseFile)nodeTag.Tag;
 
-                    if (!databaseFile.ClusterChain.Contains(291581))
-                        databaseFile.ClusterChain.Add(291581);
+                    // Debug helper left over from development; disabled.
 
                     break;
             }

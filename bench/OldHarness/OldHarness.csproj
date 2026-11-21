@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compiles the benchmark harness against the ORIGINAL FATXTools sources.
+       Pass -p:OldSrc=<path to a checkout of the original commit>. -->
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <DefineConstants>$(DefineConstants);OLD</DefineConstants>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <Nullable>disable</Nullable>
+    <NoWarn>$(NoWarn);CS8632;CS0168;CS0219;CS0414;CS0169</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="$(OldSrc)/FATX/**/*.cs" Exclude="$(OldSrc)/FATX/obj/**;$(OldSrc)/FATX/bin/**" />
+    <Compile Include="$(OldSrc)/FATXTools/Database/FileDatabase.cs" />
+    <Compile Include="$(OldSrc)/FATXTools/Database/DatabaseFile.cs" />
+    <Compile Include="$(OldSrc)/FATXTools/Analyzers/IntegrityAnalyzer.cs" />
+    <Compile Include="../Harness/Harness.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="System.Text.Json" Version="8.0.5" />
+  </ItemGroup>
+</Project>

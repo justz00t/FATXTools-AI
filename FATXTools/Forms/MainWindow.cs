@@ -25,6 +25,7 @@ namespace FATXTools.Forms
             this.Text = ApplicationTitle;
 
             DisableDatabaseOptions();
+            AddAssistantMenu();
 
             Console.SetOut(new LogWriter(this.textBox1));
             Console.WriteLine("--------------------------------");
@@ -32,47 +33,100 @@ namespace FATXTools.Forms
             Console.WriteLine("--------------------------------");
         }
 
+        /// <summary>
+        /// Thread safe, buffered log writer. Analyzers log from background
+        /// threads; previously Write(char)/Write(string) touched the TextBox
+        /// from those threads directly and every line was marshalled to the
+        /// UI thread on its own, which froze the window during scans.
+        /// </summary>
         public class LogWriter : TextWriter
         {
-            private TextBox textBox;
-            private delegate void SafeCallDelegate(string text);
+            private const int MaxLength = 2 * 1024 * 1024;
+            private readonly TextBox textBox;
+            private readonly StringBuilder pending = new StringBuilder();
+            private readonly Timer timer;
+
             public LogWriter(TextBox textBox)
             {
                 this.textBox = textBox;
+                timer = new Timer { Interval = 200 };
+                timer.Tick += (s, e) => Flush();
+                timer.Start();
             }
 
             public override void Write(char value)
             {
-                textBox.Text += value;
+                lock (pending) pending.Append(value);
             }
 
             public override void Write(string value)
             {
-                textBox.AppendText(value);
-            }
-
-            public override void WriteLine()
-            {
-                textBox.AppendText(NewLine);
+                lock (pending) pending.Append(value);
             }
 
             public override void WriteLine(string value)
             {
+                lock (pending) pending.Append(value).Append(NewLine);
+            }
+
+            public override void Flush()
+            {
+                string text;
+                lock (pending)
+                {
+                    if (pending.Length == 0)
+                        return;
+                    text = pending.ToString();
+                    pending.Clear();
+                }
+
+                if (textBox.IsDisposed)
+                    return;
+
                 if (textBox.InvokeRequired)
                 {
-                    var d = new SafeCallDelegate(WriteLine);
-                    textBox.BeginInvoke(d, new object[] { value });
+                    textBox.BeginInvoke(new Action(() => Append(text)));
                 }
                 else
                 {
-                    textBox.AppendText(value + NewLine);
+                    Append(text);
                 }
+            }
+
+            private void Append(string text)
+            {
+                // Keep the log bounded so the TextBox stays responsive.
+                if (textBox.TextLength + text.Length > MaxLength)
+                {
+                    var keep = textBox.Text;
+                    keep = keep.Substring(Math.Max(0, keep.Length - MaxLength / 2));
+                    textBox.Text = keep;
+                }
+                textBox.AppendText(text);
             }
 
             public override Encoding Encoding
             {
-                get { return Encoding.ASCII; }
+                get { return Encoding.UTF8; }
             }
+        }
+
+        private ToolStripMenuItem assistantMenuItem;
+
+        private void AddAssistantMenu()
+        {
+            var claudeMenu = new ToolStripMenuItem("Claude");
+            assistantMenuItem = new ToolStripMenuItem("Recovery Assistant...");
+            assistantMenuItem.Enabled = false;
+            assistantMenuItem.Click += (s, e) =>
+            {
+                if (driveView?.Drive == null)
+                    return;
+                var dialog = new AssistantDialog(driveView.Drive, driveView.DriveName);
+                dialog.Show(this);
+            };
+            claudeMenu.DropDownItems.Add(assistantMenuItem);
+            menuStrip1.Items.Insert(Math.Max(0, menuStrip1.Items.IndexOf(helpToolStripMenuItem)), claudeMenu);
         }
 
         private void CreateNewDriveView(string path)
@@ -133,6 +187,7 @@ namespace FATXTools.Forms
 
         private void EnableDatabaseOptions()
         {
+            if (assistantMenuItem != null) assistantMenuItem.Enabled = true;
             loadToolStripMenuItem.Enabled = true;
             saveToolStripMenuItem.Enabled = true;
 
@@ -143,6 +198,7 @@ namespace FATXTools.Forms
 
         private void DisableDatabaseOptions()
         {
+            if (assistantMenuItem != null) assistantMenuItem.Enabled = false;
             loadToolStripMenuItem.Enabled = false;
             saveToolStripMenuItem.Enabled = false;
 

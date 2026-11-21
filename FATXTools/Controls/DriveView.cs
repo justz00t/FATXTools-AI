@@ -40,6 +40,13 @@ namespace FATXTools
 
         private DriveDatabase driveDatabase;
 
+        /// <summary>
+        /// The drive shown in this view.
+        /// </summary>
+        public DriveReader Drive => drive;
+
+        public string DriveName => driveName;
+
         public DriveView()
         {
             InitializeComponent();

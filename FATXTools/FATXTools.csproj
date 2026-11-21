@@ -51,6 +51,7 @@
   </ItemGroup>
   <ItemGroup>
     <ProjectReference Include="..\FATX\FATX.csproj" />
+    <ProjectReference Include="..\FATX.AI\FATX.AI.csproj" />
   </ItemGroup>
   <ItemGroup>
     <BootstrapperPackage Include=".NETFramework,Version=v4.7.2">
@@ -70,8 +71,9 @@
   <ItemGroup>
     <PackageReference Include="Microsoft.CSharp" Version="4.7.0" />
     <PackageReference Include="System.Data.DataSetExtensions" Version="4.5.0" />
+    <PackageReference Include="System.Security.Cryptography.ProtectedData" Version="8.0.0" />
     <PackageReference Include="System.Text.Json">
-      <Version>8.0.3</Version>
+      <Version>10.0.6</Version>
     </PackageReference>
   </ItemGroup>
 </Project>

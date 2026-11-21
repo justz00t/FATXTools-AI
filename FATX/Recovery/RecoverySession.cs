@@ -50,18 +50,34 @@ namespace FATX.Recovery
         }
 
         public RecoverySession(Stream stream, string name)
+            : this(CreateDrive(stream), name)
         {
             this.stream = stream;
+        }
+
+        private static DriveReader CreateDrive(Stream stream)
+        {
+            var drive = new DriveReader(stream);
+            drive.Initialize();
+            return drive;
+        }
+
+        /// <summary>
+        /// Uses an already initialized drive (e.g. the one opened in the GUI).
+        /// Partitions that are already mounted are reused.
+        /// </summary>
+        public RecoverySession(DriveReader drive, string name)
+        {
             ImageName = name;
-            Drive = new DriveReader(stream);
-            Drive.Initialize();
+            Drive = drive;
 
             foreach (var volume in Drive.Partitions)
             {
                 var state = new PartitionState(volume);
                 try
                 {
-                    volume.Mount();
+                    if (!volume.Mounted)
+                        volume.Mount();
                     state.Database = new FileDatabase(volume);
                     state.Database.Update();
                     state.Integrity = new IntegrityAnalyzer(volume, state.Database);
@@ -145,7 +161,7 @@ namespace FATX.Recovery
 
         public void Dispose()
         {
-            stream.Dispose();
+            stream?.Dispose();
         }
     }
 }

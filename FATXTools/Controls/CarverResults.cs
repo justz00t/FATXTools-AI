@@ -35,7 +35,8 @@ namespace FATXTools
             foreach (var result in results)
             {
                 var item = listView1.Items.Add(i.ToString());
-                item.SubItems.Add(result.FileName);
+                var info = (result as CarvedFileSignature)?.Info;
+                item.SubItems.Add(info != null ? $"{result.FileName}  [{info}]" : result.FileName);
                 item.SubItems.Add(String.Format("0x{0:X}", result.Offset + baseOffset));
                 item.SubItems.Add(String.Format("0x{0:X}", result.FileSize));
                 item.Tag = result;
@@ -45,23 +46,8 @@ namespace FATXTools
 
         private void SaveFile(FileSignature signature, string path)
         {
-            const int bufsize = 0x100000;
-            var remains = signature.FileSize;
-            _volume.SeekFileArea(signature.Offset);
-
-            path = path + "/" + signature.FileName;
-            var uniquePath = Utility.UniqueFileName(path);
-            using (FileStream file = new FileStream(uniquePath, FileMode.Create))
-            {
-                while (remains > 0)
-                {
-                    var read = Math.Min(remains, bufsize);
-                    remains -= read;
-                    byte[] buf = new byte[read];
-                    _volume.GetReader().Read(buf, (int)read);
-                    file.Write(buf, 0, (int)read);
-                }
-            }
+            // Shared recovery code: sanitized unique names, truncating writes.
+            new FATX.Recovery.FileRecoverer(_volume).Save(signature, path);
         }
 
         private void recoverFileToolStripMenuItem_Click(object sender, EventArgs e)

@@ -76,6 +76,30 @@ namespace FATX.Formats
             return name;
         }
 
+        /// <summary>
+        /// Checks the identified file against the size recorded in its
+        /// directory entry. A file whose header describes a different size is
+        /// not the file the entry refers to (its clusters were reused by
+        /// another file), even when that other file's checksums pass.
+        /// </summary>
+        public void CheckExpectedSize(long expectedSize)
+        {
+            if (!FileSize.HasValue || expectedSize <= 0)
+                return;
+
+            bool mismatch = FileSizeExact ? FileSize.Value != expectedSize : FileSize.Value < expectedSize;
+            if (!mismatch)
+                return;
+
+            var detail = $"Header describes 0x{FileSize.Value:X} bytes but the directory entry says 0x{expectedSize:X}: the clusters hold a different file (overwritten).";
+            Warnings.Add(detail);
+            if (Verification != VerificationStatus.NotChecked)
+            {
+                Verification = VerificationStatus.Failed;
+                VerificationDetail = detail;
+            }
+        }
+
         public override string ToString()
         {
             var sb = new StringBuilder();
@@ -135,6 +159,17 @@ namespace FATX.Formats
         /// </summary>
         /// <param name="verify">Also verify embedded checksums (slower, reads the whole file).</param>
         /// <returns>Null if the format is not recognized.</returns>
+        /// <summary>
+        /// Identifies a file recovered through a directory entry and checks it
+        /// against the size recorded in that entry.
+        /// </summary>
+        public static FormatInfo Identify(IByteSource source, bool verify, long expectedSize)
+        {
+            var info = Identify(source, verify);
+            info?.CheckExpectedSize(expectedSize);
+            return info;
+        }
+
         public static FormatInfo Identify(IByteSource source, bool verify = false)
         {
             if (source.Length < 4)

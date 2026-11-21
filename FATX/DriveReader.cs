@@ -158,7 +158,7 @@ namespace FATX
                 //AddPartition("SystemURLCachePartition", dumpPartitionOffset + 0, 0x6000000);
                 //AddPartition("TitleURLCachePartition", dumpPartitionOffset + 0x6000000, 0x2000000);
                 //AddPartition("SystemExtPartition", dumpPartitionOffset + 0x0C000000, 0xCE30000);
-                AddPartition("SystemAuxPartition", dumpPartitionOffset + 0x18e30000, 0x8000000);
+                AddPartitionIfPresent("SystemAuxPartition", dumpPartitionOffset + 0x18e30000, 0x8000000);
 
                 // SystemAux ("SysExt") volume, present on newer dashboards.
                 AddPartitionIfPresent("SystemExtPartition", 0x10C080000, 0xCE30000);

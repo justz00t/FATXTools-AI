@@ -15,6 +15,7 @@
   <ItemGroup>
     <ProjectReference Include="..\FATX\FATX.csproj" />
     <ProjectReference Include="..\FATX.Testing\FATX.Testing.csproj" />
+    <ProjectReference Include="..\FATX.AI\FATX.AI.csproj" />
   </ItemGroup>
 
 </Project>

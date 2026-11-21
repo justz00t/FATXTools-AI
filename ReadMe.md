@@ -1,4 +1,4 @@
-<img align="left" width="80" height="80" src="FATXTools/appicon.ico">
+﻿<img align="left" width="80" height="80" src="FATXTools/appicon.ico">
 
 # FATXTools [![Build status](https://ci.appveyor.com/api/projects/status/ua22jsn54pr1398c/branch/master?svg=true)](https://ci.appveyor.com/project/aerosoul94/fatxtools/build/artifacts)
 FATXTools is a data recovery tool for FATX file systems. The goal of this project is to automate searching and recovering deleted files as well as provide tools for manual data recovery.
@@ -17,6 +17,24 @@ Download: [Github Releases](https://github.com/aerosoul94/FATXTools/releases)
 * Metadata Analyzer scans for abandoned file system metadata.
 * File Carver scans for files based on their file formats.
 * Save results to an editable and reloadable json database.
+
+# What's new in this fork
+
+**Recovery improvements**
+* Deleted files written into fragmented free space are rebuilt correctly: chain prediction skips clusters that belonged to files which already existed when the deleted file was written (switchable back to the old contiguous assumption).
+* Recovered executables are verified with their own checksums: XEX compressed-block SHA-1 chains (including dev-kit encrypted XEX) and XBE section digests, plus a size check against the directory entry that catches files whose clusters were reused by another file.
+* The metadata analyzer finds entries it used to miss (combined attribute flags such as Directory|Archive, the last cluster of a partition, single character names, 0x00 padded Xbox 360 names) and rejects more false positives.
+* The file carver is several times faster (chunked reads, one in-memory magic lookup per offset), computes exact sizes for XEX (block chain), XBE (sections), STFS CON/LIVE/PIRS packages, PDB 2.00/7.00, XDBF/GPD, RIFF, XPR0 and PE files, and can scan free space only.
+* Original Xbox F:/G: partitions (XBPartitioner table or standard layouts) and the Xbox 360 SystemExt partition are detected.
+
+**Bug fixes** (selection): crash on volumes whose cluster size is not 16KB, Xbox 360 directory entries corrupting the shared cluster buffer, out-of-range FAT links and FAT loops, directory cycles that hung the tree view and recovery, chains built from cluster 0 or past the end of the partition (crash in the integrity analyzer), gigabytes of memory used by the integrity analyzer on large drives, raw device reads straddling a sector boundary, recovered files keeping stale bytes when overwriting a larger file, deleted and re-created files with the same name overwriting each other, invalid Windows file names, the log window freezing the UI, carver reading past the end of the partition.
+
+**Claude assistant**
+* *Claude → Recovery Assistant...* in the GUI, or `fatxtools ai <image> "<request>"` on the command line, lets Claude run the analysis: find deleted game builds, verify XEX/XBE files, carve lost executables and recover them into organized folders. Requires an Anthropic API key (`ANTHROPIC_API_KEY` or entered in the dialog). Tools run locally; only small JSON summaries (names, sizes, header fields) are sent to the API.
+
+**Command line**: `fatxtools info|ls|analyze|recover|carve|identify|ai` (run `dotnet run --project FATXTools.Cli -- --help`).
+
+**Benchmark**: `bench/run-benchmark.ps1 -Image <image>` compares the original version with this one on your own image (see `bench/README.md`).
 
 # Screenshots
 ![](Screenshots/FATXTools_2020-10-26_11-03-21.png)

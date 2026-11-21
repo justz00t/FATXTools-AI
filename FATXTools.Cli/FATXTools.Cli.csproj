@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0</TargetFramework>
+    <AssemblyName>fatxtools</AssemblyName>
+    <RootNamespace>FATXTools.Cli</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\FATX\FATX.csproj" />
+    <ProjectReference Include="..\FATX.AI\FATX.AI.csproj" />
+  </ItemGroup>
+
+</Project>
