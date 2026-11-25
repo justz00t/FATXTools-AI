@@ -585,7 +585,7 @@ namespace FATX.Imaging
             output.Flush();
             Stream image = output;
             if (compressed)
-                image = new ImgcStream(output, true, cancellationToken);
+                image = new ImgcStream(output, true, cancellationToken, false);
 
             var buffer = new byte[1 << 20];
             var meter = new SpeedMeter(0);
@@ -722,7 +722,7 @@ namespace FATX.Imaging
                     // Trust the file over the report: continue after the last
                     // complete block that the report knows about.
                     long dataLength, dataEnd;
-                    using (var existing = new ImgcStream(output, true))
+                    using (var existing = new ImgcStream(output, true, default, false))
                     {
                         dataLength = existing.DataLength;
                         dataEnd = existing.DataEndFilePosition;

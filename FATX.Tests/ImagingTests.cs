@@ -344,6 +344,53 @@ namespace FATX.Tests
         }
 
         [Fact]
+        public void BlockIndexIsCachedAndValidated()
+        {
+            var disk = Sample(3 * 1024 * 1024, 8);
+            var target = Path.Combine(dir, "cached.imgc");
+            new DiskImager(new MemorySource(disk), target, new ImagingOptions()).Run();
+
+            var savedDirectory = ImgcStream.IndexCacheDirectory;
+            var savedMin = ImgcStream.IndexCacheMinBlocks;
+            var cache = Path.Combine(dir, "index-cache");
+            try
+            {
+                ImgcStream.IndexCacheDirectory = cache;
+                ImgcStream.IndexCacheMinBlocks = 1;
+
+                using (var first = new ImgcStream(target))
+                {
+                    Assert.False(first.IndexFromCache);
+                    Assert.Equal(disk, ReadAll(first));
+                }
+
+                var cacheFile = Directory.GetFiles(cache, "*.imgcidx").Single();
+                using (var second = new ImgcStream(target))
+                {
+                    Assert.True(second.IndexFromCache);
+                    Assert.Equal(disk.Length, second.Length);
+                    Assert.Equal(disk, ReadAll(second));
+                }
+
+                // A damaged cache file is ignored, not trusted.
+                var bytes = File.ReadAllBytes(cacheFile);
+                for (int i = 40; i < 60; i++)
+                    bytes[i] = 0xFF;
+                File.WriteAllBytes(cacheFile, bytes);
+                using (var third = new ImgcStream(target))
+                {
+                    Assert.False(third.IndexFromCache);
+                    Assert.Equal(disk, ReadAll(third));
+                }
+            }
+            finally
+            {
+                ImgcStream.IndexCacheDirectory = savedDirectory;
+                ImgcStream.IndexCacheMinBlocks = savedMin;
+            }
+        }
+
+        [Fact]
         public void RecoveryWorksDirectlyOnCompressedImage()
         {
             var b = new FatxImageBuilder(Platform.X360, 64L * 1024 * 1024);

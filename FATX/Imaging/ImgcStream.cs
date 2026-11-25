@@ -45,7 +45,36 @@ namespace FATX.Imaging
         {
         }
 
-        public ImgcStream(Stream file, bool leaveOpen = false, CancellationToken cancellationToken = default)
+        /// <summary>
+        /// Where block indexes of large images are cached so that only the
+        /// first open has to walk the whole file. Null disables the cache.
+        /// </summary>
+        public static string IndexCacheDirectory { get; set; } = DefaultIndexCacheDirectory();
+
+        /// <summary>
+        /// Images with fewer blocks are quick to index and are not cached.
+        /// </summary>
+        public static int IndexCacheMinBlocks { get; set; } = 20000;
+
+        /// <summary>
+        /// Whether the block index came from the cache.
+        /// </summary>
+        public bool IndexFromCache { get; }
+
+        private static string DefaultIndexCacheDirectory()
+        {
+            try
+            {
+                var root = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+                return string.IsNullOrEmpty(root) ? null : Path.Combine(root, "FATXTools", "imgc-index");
+            }
+            catch (Exception)
+            {
+                return null;
+            }
+        }
+
+        public ImgcStream(Stream file, bool leaveOpen = false, CancellationToken cancellationToken = default, bool useIndexCache = true)
         {
             this.file = file;
             this.leaveOpen = leaveOpen;
@@ -59,8 +88,21 @@ namespace FATX.Imaging
                 throw new InvalidDataException("Not an IMGC image: the file is shorter than the header.");
             Header = ImgcHeader.Parse(headerBytes);
 
-            var list = new List<Block>();
             long fileLength = file.Length;
+            string cachePath = useIndexCache ? IndexCachePath(file) : null;
+            long expected = Header.ImageLength;
+
+            if (cachePath != null && TryLoadIndex(cachePath, fileLength, out blocks, out dataLength, out long cachedEnd))
+            {
+                DataEndFilePosition = cachedEnd;
+                length = Math.Max(dataLength, expected);
+                if (expected > dataLength)
+                    Warnings.Add($"The image holds 0x{dataLength:X} of 0x{expected:X} bytes; the rest reads as zeroes.");
+                IndexFromCache = true;
+                return;
+            }
+
+            var list = new List<Block>();
             long pos = ImgcHeader.Size;
             long start = 0;
             var head = new byte[16];
@@ -124,7 +166,9 @@ namespace FATX.Imaging
             dataLength = start;
             DataEndFilePosition = pos;
 
-            long expected = Header.ImageLength;
+            if (cachePath != null && Warnings.Count == 0 && blocks.Length >= IndexCacheMinBlocks)
+                SaveIndex(cachePath, fileLength);
+
             if (expected > dataLength)
             {
                 Warnings.Add($"The image holds 0x{dataLength:X} of 0x{expected:X} bytes; the rest reads as zeroes.");
@@ -133,6 +177,116 @@ namespace FATX.Imaging
             else
             {
                 length = dataLength;
+            }
+        }
+
+        // ---- index cache ----
+
+        private const uint IndexMagic = 0x31584946;   // "FIX1"
+
+        /// <summary>
+        /// The cache file for an image, named after its path, size and
+        /// modification time so that a changed image never matches.
+        /// </summary>
+        private static string IndexCachePath(Stream file)
+        {
+            var directory = IndexCacheDirectory;
+            var name = (file as FileStream)?.Name;
+            if (directory == null || string.IsNullOrEmpty(name))
+                return null;
+
+            try
+            {
+                var info = new FileInfo(name);
+                var key = $"{info.FullName.ToLowerInvariant()}|{info.Length}|{info.LastWriteTimeUtc.Ticks}";
+                using (var sha = System.Security.Cryptography.SHA1.Create())
+                {
+                    var hash = sha.ComputeHash(System.Text.Encoding.UTF8.GetBytes(key));
+                    return Path.Combine(directory, BitConverter.ToString(hash, 0, 12).Replace("-", "").ToLowerInvariant() + ".imgcidx");
+                }
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException || e is ArgumentException || e is NotSupportedException)
+            {
+                return null;
+            }
+        }
+
+        private static bool TryLoadIndex(string path, long fileLength, out Block[] blocks, out long dataLength, out long dataEnd)
+        {
+            blocks = null;
+            dataLength = 0;
+            dataEnd = 0;
+
+            try
+            {
+                if (!File.Exists(path))
+                    return false;
+
+                using (var reader = new BinaryReader(new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1 << 20)))
+                {
+                    if (reader.ReadUInt32() != IndexMagic || reader.ReadInt64() != fileLength)
+                        return false;
+
+                    dataLength = reader.ReadInt64();
+                    dataEnd = reader.ReadInt64();
+                    int count = reader.ReadInt32();
+                    if (count < 0 || dataLength < 0 || dataEnd < ImgcHeader.Size || dataEnd > fileLength ||
+                        reader.BaseStream.Length != 32 + (long)count * 20)
+                        return false;
+
+                    var result = new Block[count];
+                    long previous = -1;
+                    for (int i = 0; i < count; i++)
+                    {
+                        result[i].Start = reader.ReadInt64();
+                        result[i].FilePos = reader.ReadInt64();
+                        result[i].PayloadSize = reader.ReadInt32();
+
+                        // Never trust a cache file blindly.
+                        if (result[i].Start <= previous || result[i].Start >= dataLength || result[i].PayloadSize < 0 ||
+                            result[i].FilePos < ImgcHeader.Size || result[i].FilePos + result[i].PayloadSize > fileLength)
+                            return false;
+                        previous = result[i].Start;
+                    }
+
+                    blocks = result;
+                    return true;
+                }
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                blocks = null;
+                return false;
+            }
+        }
+
+        private void SaveIndex(string path, long fileLength)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                var temp = path + ".tmp";
+                using (var writer = new BinaryWriter(new FileStream(temp, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20)))
+                {
+                    writer.Write(IndexMagic);
+                    writer.Write(fileLength);
+                    writer.Write(dataLength);
+                    writer.Write(DataEndFilePosition);
+                    writer.Write(blocks.Length);
+                    foreach (var b in blocks)
+                    {
+                        writer.Write(b.Start);
+                        writer.Write(b.FilePos);
+                        writer.Write(b.PayloadSize);
+                    }
+                }
+                if (File.Exists(path))
+                    File.Delete(path);
+                File.Move(temp, path);
+            }
+            catch (Exception e) when (e is IOException || e is UnauthorizedAccessException)
+            {
+                // The cache is only an optimisation.
             }
         }
 
