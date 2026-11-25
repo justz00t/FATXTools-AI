@@ -1,5 +1,6 @@
 using FATX.Analyzers;
 using FATX.Analyzers.Signatures;
+using FATX.FileSystem;
 using FATX.Formats;
 using FATX.Imaging;
 using FATX.Recovery;
@@ -360,7 +361,7 @@ namespace FATX.Tests
                 var table = new byte[0x200];
                 table[1] = 0x02;                                        // 0x00020000
                 table[10] = (byte)((partitionOffset / 0x200) >> 8);      // Partition1 offset
-                table[11] = (byte)(partitionOffset / 0x200);
+                table[11] = (byte)((partitionOffset / 0x200) & 0xFF);
                 table[13] = 0x02;                                       // Partition1 length: 0x20000 sectors
                 fs.Write(table, 0, table.Length);
                 b.WriteTo(fs, partitionOffset);
