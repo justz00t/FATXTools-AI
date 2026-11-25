@@ -256,7 +256,7 @@ Options:
                 int errors = recoverer.Results.Count(r => r.Error != null);
                 log.WriteLine($"Recovered {recoverer.FilesSaved} files to {outDir} ({errors} with errors).");
                 foreach (var r in recoverer.Results.Where(r => r.Format != null && r.Format.Verification != VerificationStatus.NotChecked))
-                    log.WriteLine($"  {r.Format.Verification,-12} {r.SourcePath} -> {r.OutputPath}");
+                    log.WriteLine($"  {r.Format.Verification,-12} {r.SourcePath} -> {r.OutputPath}{(r.Repaired ? "  (cluster chain repaired using checksums)" : "")}");
                 foreach (var r in recoverer.Results.Where(r => r.Error != null).Take(20))
                     log.WriteLine($"  ERROR {r.SourcePath}: {r.Error}");
             }

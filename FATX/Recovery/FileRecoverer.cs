@@ -20,6 +20,12 @@ namespace FATX.Recovery
         public bool Deleted { get; set; }
         public string Error { get; set; }
         public FormatInfo Format { get; set; }
+
+        /// <summary>
+        /// The predicted cluster chain failed the file's checksums and a
+        /// different layout that passes them was used instead.
+        /// </summary>
+        public bool Repaired { get; set; }
     }
 
     /// <summary>
@@ -130,6 +136,26 @@ namespace FATX.Recovery
                     if (VerifyFormats)
                     {
                         result.Format = FormatDetector.Identify(source, true, file.FileSize);
+
+                        // The predicted chain of a deleted file can be wrong.
+                        // If the file's own checksums say so, look for the
+                        // layout that passes them and save that instead.
+                        if (file.IsDeleted && !file.HasCustomClusterChain &&
+                            result.Format != null && result.Format.Verification == VerificationStatus.Failed)
+                        {
+                            var repaired = ChainRepair.TryRepair(volume, file, out var repairedInfo);
+                            if (repaired != null)
+                            {
+                                file.SetCustomClusterChain(repaired);
+                                var fixedSource = new ClusterChainSource(volume, repaired, file.FileSize);
+                                using (var output = new FileStream(path, FileMode.Create, FileAccess.Write))
+                                {
+                                    result.BytesWritten = fixedSource.CopyTo(output, 0, fixedSource.Length);
+                                }
+                                result.Format = repairedInfo;
+                                result.Repaired = true;
+                            }
+                        }
                     }
 
                     SetFileTimes(path, file);

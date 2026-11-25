@@ -156,6 +156,39 @@ public static class Harness
                 }
                 p["deleted"] = deleted;
 
+#if !OLD
+                // Checksum guided chain repair (new only): deleted executables whose
+                // predicted chain fails their own hashes are re-read with other layouts.
+                sw.Restart();
+                int repairTried = 0, repairFixed = 0;
+                var repairedPaths = new List<string>();
+                foreach (var f in db.GetFiles().Values.Where(f => f.IsDeleted && !f.IsDirectory() && f.FileSize >= 0x180))
+                {
+                    var fname = f.FileName ?? "";
+                    if (!(fname.EndsWith(".xex", StringComparison.OrdinalIgnoreCase) || fname.EndsWith(".xbe", StringComparison.OrdinalIgnoreCase) || fname.EndsWith(".xexp", StringComparison.OrdinalIgnoreCase)))
+                        continue;
+                    try
+                    {
+                        var finfo = FATX.Formats.FormatDetector.Identify(new FATX.Formats.ClusterChainSource(volume, f.ClusterChain, f.FileSize), true, f.FileSize);
+                        if (finfo == null || finfo.Verification != FATX.Formats.VerificationStatus.Failed)
+                            continue;
+                        repairTried++;
+                        if (FATX.Recovery.ChainRepair.TryRepair(volume, f, out _) != null)
+                        {
+                            repairFixed++;
+                            repairedPaths.Add(PathOf(f));
+                        }
+                    }
+                    catch (Exception)
+                    {
+                    }
+                }
+                p["repair_ms"] = sw.ElapsedMilliseconds;
+                p["repair_tried"] = repairTried;
+                p["repair_fixed"] = repairFixed;
+                p["repair_paths"] = repairedPaths;
+#endif
+
                 if (carve)
                 {
                     log.WriteLine($"[{version}] {volume.Name}: file carver");

@@ -248,6 +248,15 @@ public static class Compare
         var lost = ot.VerifiedOffsets.Count(x => !nt.VerifiedOffsets.Contains(x));
         md.AppendLine($"Executables that verify with the new version but not the old: **{gained}**; the reverse: {lost}.");
         md.AppendLine();
+        if (n.ValueKind == JsonValueKind.Object && n.TryGetProperty("repair_tried", out var rt))
+        {
+            md.AppendLine($"Checksum guided chain repair (new only, {n.GetProperty("repair_ms").GetInt64() / 1000.0:F1}s): of {rt.GetInt32()} deleted executables that fail with the predicted chain, " +
+                          $"**{n.GetProperty("repair_fixed").GetInt32()}** verify after trying other cluster layouts.");
+            var paths = n.GetProperty("repair_paths").EnumerateArray().Select(x => x.GetString()).Take(20).ToList();
+            if (paths.Count > 0)
+                md.AppendLine("Repaired: " + string.Join(", ", paths.Select(x => $"`{x}`")));
+            md.AppendLine();
+        }
     }
 
     private static void Carver(StringBuilder md, Volume volume, JsonElement o, JsonElement n)

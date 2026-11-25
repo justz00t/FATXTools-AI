@@ -458,6 +458,57 @@ namespace FATX.Tests
             }
         }
 
+        /// <summary>
+        /// The timestamps say the file in the way is newer than the deleted
+        /// executable, so the predicted chain runs straight through it. The
+        /// executable's own hashes reveal that and select the right layout.
+        /// </summary>
+        [Fact]
+        public void ChecksumsRepairWronglyPredictedChain()
+        {
+            var b = new FatxImageBuilder(Platform.X360, 64L * 1024 * 1024) { Policy = AllocationPolicy.FirstFree };
+            int cluster = (int)b.BytesPerCluster;
+            var t = new DateTime(2011, 3, 1, 12, 0, 0);
+            var xex = ExecutableBuilders.BuildXex("game.exe", 0x41560817, new[] { 0x8000, 0x8000, 0x8000, 0x8000 });
+
+            var hole = b.AddFile(b.Root, "hole.bin", new byte[cluster * 4], t);
+            // Its timestamp claims it was created after the executable.
+            b.AddFile(b.Root, "keep.bin", new byte[cluster * 2], t.AddDays(30));
+            b.Delete(hole);
+            var exe = b.AddFile(b.Root, "default.xex", xex, t.AddDays(1));
+            Assert.NotEqual(exe.Chain[4], exe.Chain[3] + 1);    // fragmented around keep.bin
+            b.Delete(exe);
+
+            var volume = b.Mount(out _);
+            var analyzer = new MetadataAnalyzer(volume, volume.BytesPerCluster, volume.FileAreaLength);
+            var db = new FATXTools.Database.FileDatabase(volume);
+            foreach (var d in analyzer.Analyze(CancellationToken.None, null)) db.AddFile(d, true);
+            db.Update();
+            var file = db.GetFiles().Values.Single(f => f.FileName == "default.xex");
+
+            var before = FormatDetector.Identify(new ClusterChainSource(volume, file.ClusterChain, file.FileSize), true, file.FileSize);
+            Assert.Equal(VerificationStatus.Failed, before.Verification);
+
+            var chain = ChainRepair.TryRepair(volume, file, out var info);
+            Assert.NotNull(chain);
+            Assert.Equal(exe.Chain, chain);
+            Assert.Equal(VerificationStatus.Verified, info.Verification);
+
+            var outDir = Path.Combine(Path.GetTempPath(), "fatx-repair-" + Guid.NewGuid().ToString("N"));
+            try
+            {
+                var recoverer = new FileRecoverer(volume) { VerifyFormats = true };
+                recoverer.Save(file, outDir);
+                var saved = recoverer.Results.Single();
+                Assert.True(saved.Repaired);
+                Assert.Equal(xex, File.ReadAllBytes(saved.OutputPath));
+            }
+            finally
+            {
+                Directory.Delete(outDir, true);
+            }
+        }
+
         [Fact]
         public void BinkAndPngAreCarvedWithExactSizes()
         {
