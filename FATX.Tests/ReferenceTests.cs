@@ -205,6 +205,30 @@ namespace FATX.Tests
         }
 
         [Fact]
+        public void IdenticalFilesOfSeveralBuildsAreAllReported()
+        {
+            // A second build that shares every file with the first one.
+            var second = Path.Combine(dir, "build_02");
+            foreach (var source in Directory.GetFiles(folder, "*", SearchOption.AllDirectories))
+            {
+                var target = Path.Combine(second, Path.GetRelativePath(folder, source));
+                Directory.CreateDirectory(Path.GetDirectoryName(target));
+                File.Copy(source, target);
+            }
+
+            var sets = new[] { ReferenceSet.Build(folder), ReferenceSet.Build(second) };
+            var matches = new ReferenceMatcher(BuildVolume(), sets).Analyze();
+
+            foreach (var set in sets)
+            {
+                var xex = matches.Single(m => m.Set == set && m.Exact && m.File.Path == "default.xex");
+                Assert.Equal(200u, xex.FirstCluster);
+                Assert.Contains(matches, m => m.Set == set && !m.Exact && m.File.Path == "default.xex");
+                Assert.Contains(matches, m => m.Set == set && m.Exact && m.File.Path == "data/frag.pak" && m.Fragmented);
+            }
+        }
+
+        [Fact]
         public void BlockSizeMustFitTheClusterSize()
         {
             var set = ReferenceSet.Build(folder, 0x8000);

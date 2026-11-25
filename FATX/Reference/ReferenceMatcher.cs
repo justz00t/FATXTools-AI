@@ -105,6 +105,11 @@ namespace FATX.Reference
         private bool[][] comparable;    // per file, per file cluster
         private int[] comparableCount;
 
+        // Identical files (the same file in several builds) are searched for
+        // once; every match is reported for each of them.
+        private int[] canonical;
+        private readonly Dictionary<int, List<int>> aliases = new Dictionary<int, List<int>>();
+
         public ReferenceMatcher(Volume volume, IEnumerable<ReferenceSet> referenceSets)
         {
             this.volume = volume;
@@ -160,9 +165,27 @@ namespace FATX.Reference
             using (var sha = SHA1.Create())
                 zero = ReferenceSet.Fingerprint(sha, new byte[blockSize], 0, blockSize);
 
+            canonical = new int[files.Count];
+            var firstWithContent = new Dictionary<string, int>();
+            for (int f = 0; f < files.Count; f++)
+            {
+                string key = files[f].Sha1 + ":" + files[f].Size;
+                if (!firstWithContent.TryGetValue(key, out int first))
+                    firstWithContent[key] = first = f;
+                canonical[f] = first;
+                if (first != f)
+                {
+                    if (!aliases.TryGetValue(first, out var others))
+                        aliases[first] = others = new List<int>();
+                    others.Add(f);
+                }
+            }
+
             for (int f = 0; f < files.Count; f++)
             {
                 var file = files[f];
+                if (canonical[f] != f)
+                    continue;
                 for (int b = 0; b < file.Blocks.Length; b++)
                 {
                     ulong h = file.Blocks[b];
@@ -272,6 +295,27 @@ namespace FATX.Reference
                             Exact = true,
                         });
                     }
+                }
+            }
+
+            // Report every match for the identical files of other builds too.
+            foreach (var m in matches.ToList())
+            {
+                if (!aliases.TryGetValue(m.FileIndex, out var others))
+                    continue;
+                foreach (int other in others)
+                {
+                    matches.Add(new ReferenceMatch
+                    {
+                        Set = fileSets[other],
+                        File = files[other],
+                        FileIndex = other,
+                        Chain = m.Chain,
+                        ClustersMatched = m.ClustersMatched,
+                        ClustersComparable = m.ClustersComparable,
+                        Exact = m.Exact,
+                        Fragmented = m.Fragmented,
+                    });
                 }
             }
 
