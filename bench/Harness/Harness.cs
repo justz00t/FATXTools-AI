@@ -48,7 +48,12 @@ public static class Harness
         result["partitions"] = partitions;
 
         var total = Stopwatch.StartNew();
-        using (var fs = new FileStream(image, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 0x10000))
+#if OLD
+        using (Stream fs = new FileStream(image, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 0x10000))
+#else
+        // Raw images and compressed .imgc images.
+        using (Stream fs = FATX.Imaging.ImageFile.OpenRead(image))
+#endif
         {
             var reader = new DriveReader(fs);
             reader.Initialize();
@@ -168,7 +173,22 @@ public static class Harness
                             ["name"] = c.FileName,
                             ["size"] = c.FileSize,
                             ["type"] = c.GetType().Name,
+#if !OLD
+                            ["damaged"] = (c as FATX.Analyzers.Signatures.CarvedFileSignature)?.Damaged ?? false,
+#endif
                         }).ToList();
+#if !OLD
+                        // Second pass the original cannot do: verify what was found in
+                        // free space and rebuild fragmented executables.
+                        sw.Restart();
+                        var verifying = new FileCarver(volume, FileCarverInterval.Cluster, length) { FreeSpaceOnly = true, VerifyFiles = true };
+                        var checkedFiles = verifying.Analyze(CancellationToken.None, null).OfType<FATX.Analyzers.Signatures.CarvedFileSignature>().ToList();
+                        p["carve_verify_ms"] = sw.ElapsedMilliseconds;
+                        p["carve_verify_found"] = checkedFiles.Count;
+                        p["carve_verify_verified"] = checkedFiles.Count(c => c.Info.Verification == FATX.Formats.VerificationStatus.Verified);
+                        p["carve_verify_failed"] = checkedFiles.Count(c => c.Info.Verification == FATX.Formats.VerificationStatus.Failed);
+                        p["carve_verify_fragmented_rebuilt"] = checkedFiles.Count(c => c.ClusterChain != null);
+#endif
                     }
                     catch (Exception e)
                     {

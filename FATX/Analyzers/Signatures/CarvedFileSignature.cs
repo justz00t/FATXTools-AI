@@ -1,5 +1,6 @@
 using FATX.FileSystem;
 using FATX.Formats;
+using System.Collections.Generic;
 
 namespace FATX.Analyzers.Signatures
 {
@@ -23,6 +24,18 @@ namespace FATX.Analyzers.Signatures
         /// file system (i.e. the file is probably not deleted).
         /// </summary>
         public bool InAllocatedSpace { get; set; }
+
+        /// <summary>
+        /// The signature matched but the header could not be parsed or makes
+        /// no sense: the file is damaged (or a false positive).
+        /// </summary>
+        public bool Damaged => !Info.Plausible;
+
+        /// <summary>
+        /// The clusters holding the file when it is not contiguous; null for
+        /// a contiguous file starting at <see cref="FileSignature.Offset"/>.
+        /// </summary>
+        public List<uint> ClusterChain { get; set; }
 
         public override bool Test() => true;
 

@@ -60,7 +60,7 @@ namespace FATX.AI
             new ToolDefinition
             {
                 Name = "open_image",
-                Description = "Open an Xbox / Xbox 360 hard drive image (raw .img/.bin dump) read-only. Must be called before the other tools unless the server was started with an image. Optionally sets the folder recovered files are written to.",
+                Description = "Open an Xbox / Xbox 360 hard drive image (raw .img/.bin dump, or an HDD Raw Copy Tool compressed .imgc image) read-only. Must be called before the other tools unless the server was started with an image. Optionally sets the folder recovered files are written to.",
                 Properties =
                 {
                     ["path"] = new Dictionary<string, object> { ["type"] = "string", ["description"] = "Full path of the image file, e.g. E:\\Xbox\\xnaxdk.img." },

@@ -4,6 +4,7 @@ using FATX.FileSystem;
 using FATX.Formats;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 using System.Threading;
 
@@ -97,6 +98,26 @@ namespace FATX.Analyzers
         public bool VerifyFiles { get; set; }
 
         /// <summary>
+        /// Keep files whose signature matched but whose header is damaged
+        /// (e.g. partly overwritten) instead of dropping them. They are
+        /// marked <see cref="CarvedFileSignature.Damaged"/> and saved up to
+        /// the next found file or used cluster, so nothing that might still
+        /// be recoverable by hand is lost.
+        /// </summary>
+        public bool KeepDamaged { get; set; } = true;
+
+        /// <summary>
+        /// Files larger than this are not re-read to test an alternative
+        /// cluster layout.
+        /// </summary>
+        private const long MaxFragmentRetrySize = 4L * 1024 * 1024 * 1024;
+
+        /// <summary>
+        /// Upper bound for the amount saved for a file of unknown size.
+        /// </summary>
+        private const long MaxUnknownSize = 64L * 1024 * 1024;
+
+        /// <summary>
         /// Bytes read per I/O request.
         /// </summary>
         private const int ChunkSize = 8 * 1024 * 1024;
@@ -165,18 +186,52 @@ namespace FATX.Analyzers
                     try
                     {
                         var info = FormatDetector.Identify(new VolumeAreaSource(_volume, offset), VerifyFiles);
-                        if (info == null || !info.Plausible)
+                        if (info == null)
                             continue;
+                        if (!info.Plausible && !KeepDamaged)
+                            continue;
+
+                        // A deleted file that was written around files which
+                        // existed at the time is not contiguous. If its own
+                        // checksums fail when read contiguously, try reading
+                        // it from the free clusters only.
+                        List<uint> chain = null;
+                        if (VerifyFiles && info.Plausible && !allocated && offset % bytesPerCluster == 0 &&
+                            info.Verification == VerificationStatus.Failed &&
+                            info.FileSize.HasValue && info.FileSize.Value > bytesPerCluster && info.FileSize.Value <= MaxFragmentRetrySize)
+                        {
+                            var candidate = BuildFreeChain(cluster, info.FileSize.Value, bytesPerCluster);
+                            if (candidate != null)
+                            {
+                                var alt = FormatDetector.Identify(new ClusterChainSource(_volume, candidate, info.FileSize.Value), true);
+                                if (alt != null && alt.Plausible && alt.Verification == VerificationStatus.Verified)
+                                {
+                                    alt.Properties["Layout"] = "fragmented (rebuilt from free clusters)";
+                                    // The size of a file that fails verification is an
+                                    // upper bound; now the exact size is known.
+                                    int used = (int)((alt.FileSize.GetValueOrDefault(info.FileSize.Value) + bytesPerCluster - 1) / bytesPerCluster);
+                                    if (used > 0 && used < candidate.Count)
+                                        candidate.RemoveRange(used, candidate.Count - used);
+                                    info = alt;
+                                    chain = candidate;
+                                }
+                            }
+                        }
 
                         var signature = new CarvedFileSignature(_volume, offset, info)
                         {
-                            InAllocatedSpace = allocated
+                            InAllocatedSpace = allocated,
+                            ClusterChain = chain,
                         };
 
-                        var baseName = info.Format.Split(' ')[0].Replace("%", "").Replace("-", "");
+                        var baseName = new string(info.Format.Split(' ')[0].Where(ch => char.IsLetterOrDigit(ch)).ToArray());
+                        if (baseName.Length == 0)
+                            baseName = "file";
                         counters.TryGetValue(baseName, out var n);
                         counters[baseName] = ++n;
-                        signature.FileName = info.SuggestFileName($"{baseName}_{n:D4}");
+                        signature.FileName = info.Plausible
+                            ? info.SuggestFileName($"{baseName}_{n:D4}")
+                            : $"{baseName}_{n:D4}_damaged{info.Extension}";
 
                         _carvedFiles.Add(signature);
                         Console.WriteLine($"Found {info} at 0x{offset:X}.");
@@ -190,6 +245,8 @@ namespace FATX.Analyzers
                 ReportProgress(progress, chunkStart + scanEnd, interval, ref lastReport, reportEvery);
             }
 
+            SizeDamagedFiles(bytesPerCluster);
+
             // Fill up the progress bar
             progress?.Report((int)Math.Min(int.MaxValue, _length / interval));
 
@@ -197,6 +254,65 @@ namespace FATX.Analyzers
             Console.WriteLine($"Complete! Found {_carvedFiles.Count} files in {sw.ElapsedMilliseconds} ms.");
 
             return _carvedFiles;
+        }
+
+        /// <summary>
+        /// The clusters a file of <paramref name="size"/> bytes starting at
+        /// <paramref name="firstCluster"/> occupies when clusters that are in
+        /// use are skipped. Null when that is the same as a contiguous read.
+        /// </summary>
+        private List<uint> BuildFreeChain(uint firstCluster, long size, long bytesPerCluster)
+        {
+            long needed = (size + bytesPerCluster - 1) / bytesPerCluster;
+            var chain = new List<uint>((int)Math.Min(needed, 1 << 20));
+            bool skipped = false;
+            uint max = _volume.ClusterCount;
+
+            for (long c = firstCluster; chain.Count < needed; c++)
+            {
+                if (c > max)
+                    break;
+                if (_volume.IsClusterAllocated((uint)c))
+                {
+                    skipped = true;
+                    continue;
+                }
+                chain.Add((uint)c);
+            }
+
+            return skipped && chain.Count > 0 ? chain : null;
+        }
+
+        /// <summary>
+        /// Gives files with a damaged header a size: up to the next found
+        /// file, the next used cluster (for files in free space) or
+        /// <see cref="MaxUnknownSize"/>.
+        /// </summary>
+        private void SizeDamagedFiles(long bytesPerCluster)
+        {
+            for (int i = 0; i < _carvedFiles.Count; i++)
+            {
+                var file = _carvedFiles[i] as CarvedFileSignature;
+                if (file == null || !file.Damaged)
+                    continue;
+
+                long limit = Math.Min(MaxUnknownSize, _length - file.Offset);
+                if (i + 1 < _carvedFiles.Count && _carvedFiles[i + 1].Offset > file.Offset)
+                    limit = Math.Min(limit, _carvedFiles[i + 1].Offset - file.Offset);
+
+                if (!file.InAllocatedSpace)
+                {
+                    long end = (file.Offset / bytesPerCluster + 1) * bytesPerCluster;
+                    while (end - file.Offset < limit && !_volume.IsClusterAllocated((uint)(end / bytesPerCluster) + 1))
+                        end += bytesPerCluster;
+                    limit = Math.Min(limit, end - file.Offset);
+                }
+
+                file.FileSize = Math.Max(0, limit);
+                file.Info.FileSize = file.FileSize;
+                file.Info.FileSizeExact = false;
+                file.Info.Warnings.Add("Header is damaged; the size is a guess (up to the next file or used cluster).");
+            }
         }
 
         private bool ChunkFullyAllocated(long start, long length, long bytesPerCluster)

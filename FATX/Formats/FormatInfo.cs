@@ -110,6 +110,7 @@ namespace FATX.Formats
             if (!string.IsNullOrEmpty(EmbeddedName)) sb.Append($" name={EmbeddedName}");
             if (FileSize.HasValue) sb.Append($" size=0x{FileSize.Value:X}{(FileSizeExact ? "" : "~")}");
             if (Verification != VerificationStatus.NotChecked) sb.Append($" verify={Verification}");
+            if (!Plausible) sb.Append(" DAMAGED-HEADER");
             return sb.ToString();
         }
     }
@@ -131,6 +132,8 @@ namespace FATX.Formats
             SimpleFormats.TryParseRiff,
             SimpleFormats.TryParseXpr0,
             SimpleFormats.TryParsePe,
+            SimpleFormats.TryParseBink,
+            SimpleFormats.TryParsePng,
         };
 
         /// <summary>
@@ -152,6 +155,9 @@ namespace FATX.Formats
             0x52494646, // RIFF
             0x58505230, // XPR0
             0x4D5A9000, // MZ\x90\0
+            0x42494B62, 0x42494B64, 0x42494B66, 0x42494B67, 0x42494B68, 0x42494B69, 0x42494B6B, // BIKb..BIKk (Bink video)
+            0x4B423261, 0x4B423264, 0x4B423266, 0x4B423267, 0x4B423268, 0x4B423269, 0x4B42326A, // KB2a..KB2j (Bink 2)
+            0x89504E47, // PNG
         };
 
         /// <summary>

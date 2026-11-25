@@ -127,6 +127,96 @@ namespace FATX.Formats
             return info;
         }
 
+        /// <summary>
+        /// Bink video ("BIK?" / "KB2?"): the header stores the file size minus 8.
+        /// </summary>
+        public static FormatInfo TryParseBink(IByteSource src, bool verify)
+        {
+            var head = src.ReadBytes(0, 0x24);
+            if (head.Length < 0x24)
+                return null;
+
+            bool bink1 = head[0] == 'B' && head[1] == 'I' && head[2] == 'K';
+            bool bink2 = head[0] == 'K' && head[1] == 'B' && head[2] == '2';
+            if ((!bink1 && !bink2) || head[3] < 'a' || head[3] > 'z')
+                return null;
+
+            uint size = BitConverter.ToUInt32(head, 4);
+            uint frames = BitConverter.ToUInt32(head, 8);
+            uint width = BitConverter.ToUInt32(head, 0x14);
+            uint height = BitConverter.ToUInt32(head, 0x18);
+
+            var info = new FormatInfo { Format = bink1 ? "BIK" : "BK2", Extension = bink1 ? ".bik" : ".bk2" };
+            if (size < 0x24 || size > 0xF0000000 || frames == 0 || frames > 10000000 ||
+                width == 0 || width > 16384 || height == 0 || height > 16384)
+            {
+                info.Plausible = false;
+                info.Warnings.Add("Implausible Bink header.");
+                return info;
+            }
+
+            info.FileSize = (long)size + 8;
+            info.FileSizeExact = true;
+            info.Properties["Video"] = $"{width}x{height}, {frames} frames";
+            if (verify) info.Verification = VerificationStatus.Unverifiable;
+            return info;
+        }
+
+        /// <summary>
+        /// PNG: the size is found by walking the chunks up to IEND.
+        /// </summary>
+        public static FormatInfo TryParsePng(IByteSource src, bool verify)
+        {
+            var head = src.ReadBytes(0, 24);
+            if (head.Length < 24 || head[0] != 0x89 || head[1] != 'P' || head[2] != 'N' || head[3] != 'G' ||
+                head[4] != 0x0D || head[5] != 0x0A || head[6] != 0x1A || head[7] != 0x0A)
+                return null;
+
+            var info = new FormatInfo { Format = "PNG", Extension = ".png" };
+            if (src.ReadUInt32BE(8) != 13 || src.ReadUInt32BE(12) != 0x49484452) // IHDR
+            {
+                info.Plausible = false;
+                info.Warnings.Add("Missing IHDR chunk.");
+                return info;
+            }
+
+            info.Properties["Image"] = $"{src.ReadUInt32BE(16)}x{src.ReadUInt32BE(20)}";
+
+            long pos = 8;
+            for (int i = 0; i < 100000; i++)
+            {
+                if (!src.TryReadUInt32(pos, true, out var length) || !src.TryReadUInt32(pos + 4, true, out var type) || length > 0x7FFFFFFF)
+                    break;
+
+                pos += 12 + (long)length;
+                if (type == 0x49454E44) // IEND
+                {
+                    info.FileSize = pos;
+                    info.FileSizeExact = true;
+                    if (verify) info.Verification = VerificationStatus.Unverifiable;
+                    return info;
+                }
+
+                // Chunk types are four ASCII letters.
+                for (int shift = 0; shift < 32; shift += 8)
+                {
+                    uint c = (type >> shift) & 0xFF;
+                    if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')))
+                    {
+                        pos = -1;
+                        break;
+                    }
+                }
+
+                if (pos < 0 || pos > 0x20000000)
+                    break;
+            }
+
+            info.Plausible = false;
+            info.Warnings.Add("PNG chunk list is broken or the IEND chunk is missing.");
+            return info;
+        }
+
         public static FormatInfo TryParsePe(IByteSource src, bool verify)
         {
             var mz = src.ReadBytes(0, 4);

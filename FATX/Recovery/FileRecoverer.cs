@@ -159,7 +159,10 @@ namespace FATX.Recovery
             var result = new RecoveredFile { SourcePath = $"carved@0x{signature.Offset:X}", OutputPath = path, Deleted = true };
             TryIO(() =>
             {
-                var source = new VolumeAreaSource(volume, signature.Offset, signature.FileSize);
+                var chain = (signature as CarvedFileSignature)?.ClusterChain;
+                IByteSource source = chain != null
+                    ? (IByteSource)new ClusterChainSource(volume, chain, signature.FileSize)
+                    : new VolumeAreaSource(volume, signature.Offset, signature.FileSize);
                 using (var output = new FileStream(path, FileMode.Create, FileAccess.Write))
                 {
                     result.BytesWritten = source.CopyTo(output, 0, source.Length);

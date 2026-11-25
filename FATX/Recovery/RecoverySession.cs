@@ -45,7 +45,7 @@ namespace FATX.Recovery
         private readonly Stream stream;
 
         public RecoverySession(string imagePath)
-            : this(new FileStream(imagePath, FileMode.Open, FileAccess.Read, FileShare.ReadWrite, 0x10000), imagePath)
+            : this(FATX.Imaging.ImageFile.OpenRead(imagePath), imagePath)
         {
         }
 

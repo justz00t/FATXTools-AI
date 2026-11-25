@@ -531,6 +531,8 @@ namespace FATX.AI
                     image_offset = $"0x{baseOffset + x.c.Offset:X}",
                     cluster = x.c.Offset / p.Volume.BytesPerCluster + 1,
                     in_allocated_space = x.c.InAllocatedSpace,
+                    damaged_header = x.c.Damaged,
+                    fragmented = x.c.ClusterChain != null,
                     info = Describe(x.c.Info),
                 }).ToList(),
             };

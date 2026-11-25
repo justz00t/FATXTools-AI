@@ -27,13 +27,25 @@ Download: [Github Releases](https://github.com/aerosoul94/FATXTools/releases)
 * The file carver is several times faster (chunked reads, one in-memory magic lookup per offset), computes exact sizes for XEX (block chain), XBE (sections), STFS CON/LIVE/PIRS packages, PDB 2.00/7.00, XDBF/GPD, RIFF, XPR0 and PE files, and can scan free space only.
 * Original Xbox F:/G: partitions (XBPartitioner table or standard layouts) and the Xbox 360 SystemExt partition are detected.
 
+**Drive imaging and compressed images**
+* *File → Dump Drive to Image...* and `fatxtools dump <drive> <target>` copy a drive to a raw `.img` or a compressed `.imgc` image (the HDD Raw Copy Tool v1 format). Reading, compressing and writing run on separate threads with large sequential requests, so the source drive never waits for the target.
+* Unreadable sectors never stop a dump. For raw targets they are skipped first and retried sector by sector after everything readable is safe; what stays unreadable is zero filled and listed in `<target>.dump.json`. Interrupted dumps resume (`--resume`), and MD5 / SHA-1 / SHA-256 / SHA-512 are computed while copying.
+* `.imgc` images open directly everywhere (GUI, command line, MCP, benchmark): no unpacking to a raw image first. Truncated or damaged `.imgc` files still open; the missing parts read as zeroes and are reported.
+* `fatxtools convert` converts between raw and compressed images, `fatxtools hash` hashes the drive contents of either, `fatxtools devices` lists drives. On Linux use `/dev/sdX` paths.
+* Not supported: the newer `.imgcv2` format of HDD Raw Copy Tool 2.x, and writing images back to a drive.
+
+**More complete carving**
+* Files whose signature matches but whose header is damaged are no longer dropped: they are listed as `..._damaged` and saved up to the next file or used cluster (`KeepDamaged`, on by default).
+* With verification on, a deleted XEX/XBE in free space that fails its checksums when read contiguously is re-read from the free clusters only (skipping clusters in use) and kept if it then verifies, which recovers executables that were written around existing files.
+* Bink video (`.bik`, `.bk2`) and PNG files are carved with exact sizes.
+
 **Bug fixes** (selection): crash on volumes whose cluster size is not 16KB, Xbox 360 directory entries corrupting the shared cluster buffer, out-of-range FAT links and FAT loops, directory cycles that hung the tree view and recovery, chains built from cluster 0 or past the end of the partition (crash in the integrity analyzer), gigabytes of memory used by the integrity analyzer on large drives, raw device reads straddling a sector boundary, recovered files keeping stale bytes when overwriting a larger file, deleted and re-created files with the same name overwriting each other, invalid Windows file names, the log window freezing the UI, carver reading past the end of the partition.
 
 **Claude assistant (MCP, no API key needed)**
 * `fatxtools mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server. Add it to Claude Desktop or Claude Code and just ask, e.g. *"Open E:\Xbox\xnaxdk.img, find deleted game builds and recover the ones whose executables verify."* Claude runs on your normal Claude subscription; the tools run locally and only read the image. See [MCP setup](#mcp-setup).
 * Optional, with an Anthropic API key: *Claude → Recovery Assistant...* in the GUI, or `fatxtools ai <image> "<request>"` on the command line, lets Claude run the analysis: find deleted game builds, verify XEX/XBE files, carve lost executables and recover them into organized folders. Requires an Anthropic API key (`ANTHROPIC_API_KEY` or entered in the dialog). Tools run locally; only small JSON summaries (names, sizes, header fields) are sent to the API.
 
-**Command line**: `fatxtools info|ls|analyze|recover|carve|identify|ai` (run `dotnet run --project FATXTools.Cli -- --help`).
+**Command line**: `fatxtools info|ls|analyze|recover|carve|identify|devices|dump|convert|hash|ai` (run `dotnet run --project FATXTools.Cli -- --help`).
 
 **Benchmark**: `bench/run-benchmark.ps1 -Image <image>` compares the original version with this one on your own image (see `bench/README.md`).
 

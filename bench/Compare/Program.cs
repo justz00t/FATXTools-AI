@@ -38,7 +38,7 @@ public static class Compare
                       $"Peak memory: old {oldDoc.GetProperty("peak_working_set_mb").GetInt64()} MB, new {newDoc.GetProperty("peak_working_set_mb").GetInt64()} MB.");
         md.AppendLine();
 
-        using (var fs = new FileStream(image, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+        using (var fs = FATX.Imaging.ImageFile.OpenRead(image))
         {
             var reader = new DriveReader(fs);
             reader.Initialize();
@@ -290,6 +290,16 @@ public static class Compare
         md.AppendLine($"| Executables found | {oj.exes} | {nj.exes} |");
         md.AppendLine($"| Executables saved intact with the exact size (verified) | {oj.verified} | {nj.verified} |");
         md.AppendLine($"| Files with unknown size (saved as 0 bytes) | {oj.zeroSize} | {nj.zeroSize} |");
+        int damaged = nc.Count(c => c.TryGetProperty("damaged", out var d) && d.ValueKind == JsonValueKind.True);
+        md.AppendLine($"| Of those: damaged headers kept for manual recovery | n/a (not reported) | {damaged} |");
+        if (n.TryGetProperty("carve_verify_found", out var vf))
+        {
+            md.AppendLine();
+            md.AppendLine($"Verifying pass over free space (new only, {n.GetProperty("carve_verify_ms").GetInt64() / 1000.0:F1}s): " +
+                          $"{vf.GetInt32()} files, {n.GetProperty("carve_verify_verified").GetInt32()} verified intact, " +
+                          $"{n.GetProperty("carve_verify_failed").GetInt32()} failed their checksums, " +
+                          $"{n.GetProperty("carve_verify_fragmented_rebuilt").GetInt32()} fragmented executables rebuilt from free clusters.");
+        }
         md.AppendLine();
         md.AppendLine("Found by type (old): " + string.Join(", ", oc.GroupBy(c => c.GetProperty("type").GetString()).Select(g => $"{g.Key} {g.Count()}")) + "  ");
         md.AppendLine("Found by type (new): " + string.Join(", ", nc.GroupBy(c => TypeOfNew(volume, c)).Select(g => $"{g.Key} {g.Count()}")));

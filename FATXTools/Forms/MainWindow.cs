@@ -26,6 +26,7 @@ namespace FATXTools.Forms
 
             DisableDatabaseOptions();
             AddAssistantMenu();
+            AddImagingMenu();
 
             Console.SetOut(new LogWriter(this.textBox1));
             Console.WriteLine("--------------------------------");
@@ -127,6 +128,39 @@ namespace FATXTools.Forms
             };
             claudeMenu.DropDownItems.Add(assistantMenuItem);
             menuStrip1.Items.Insert(Math.Max(0, menuStrip1.Items.IndexOf(helpToolStripMenuItem)), claudeMenu);
+        }
+
+        /// <summary>
+        /// File > Dump Drive to Image / Convert Image.
+        /// </summary>
+        private void AddImagingMenu()
+        {
+            var dumpItem = new ToolStripMenuItem("Dump Drive to Image...");
+            dumpItem.Click += (s, e) => ShowDumpDialog(false);
+            var convertItem = new ToolStripMenuItem("Convert Image...");
+            convertItem.Click += (s, e) => ShowDumpDialog(true);
+
+            int index = fileToolStripMenuItem.DropDownItems.IndexOf(openDeviceToolStripMenuItem) + 1;
+            fileToolStripMenuItem.DropDownItems.Insert(index, convertItem);
+            fileToolStripMenuItem.DropDownItems.Insert(index, dumpItem);
+        }
+
+        private void ShowDumpDialog(bool convert)
+        {
+            using (var dialog = new DumpDialog(convert))
+            {
+                if (dialog.ShowDialog(this) == DialogResult.OK && dialog.OpenWhenFinished && dialog.ResultPath != null)
+                {
+                    try
+                    {
+                        OpenDiskImage(dialog.ResultPath);
+                    }
+                    catch (Exception ex)
+                    {
+                        MessageBox.Show(ex.Message, "Cannot open image", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
         }
 
         private void CreateNewDriveView(string path)
@@ -252,7 +286,10 @@ namespace FATXTools.Forms
 
         private void openImageToolStripMenuItem_Click(object sender, EventArgs e)
         {
-            OpenFileDialog ofd = new OpenFileDialog();
+            OpenFileDialog ofd = new OpenFileDialog()
+            {
+                Filter = "Drive images (*.img;*.imgc;*.bin)|*.img;*.imgc;*.bin|All files (*.*)|*.*"
+            };
             if (ofd.ShowDialog() == DialogResult.OK)
             {
                 OpenDiskImage(ofd.FileName);

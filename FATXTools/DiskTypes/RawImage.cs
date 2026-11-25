@@ -4,9 +4,9 @@ namespace FATXTools.DiskTypes
 {
     public class RawImage : FATX.DriveReader
     {
-        // TODO: replace with FileStream to be able to use "using"
+        // Raw images and HDD Raw Copy Tool compressed images (.imgc).
         public RawImage(string fileName)
-            : base(new FileStream(fileName, FileMode.Open, FileAccess.Read))
+            : base(FATX.Imaging.ImageFile.OpenRead(fileName))
         {
             base.Initialize();
         }
