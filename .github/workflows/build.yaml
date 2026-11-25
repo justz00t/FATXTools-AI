@@ -2,7 +2,7 @@ name: Build FATXTools
 
 on:
   push:
-    branches: [ master ]
+    branches: [ master, 'claude/**' ]
   pull_request:
     branches: [ master ]
   
@@ -36,7 +36,17 @@ jobs:
     
     # Execute all unit tests in the solution
     - name: Execute unit tests
-      run: dotnet test
+      shell: pwsh
+      run: |
+        dotnet test 2>&1 | Tee-Object -FilePath test.log
+        $code = $LASTEXITCODE
+        # Show the outcome on the run page.
+        "### Unit tests" >> $env:GITHUB_STEP_SUMMARY
+        '```' >> $env:GITHUB_STEP_SUMMARY
+        Select-String -Path test.log -Pattern 'Passed!|Failed!|\[FAIL\]|error ' | Select-Object -First 60 | ForEach-Object { $_.Line } >> $env:GITHUB_STEP_SUMMARY
+        '```' >> $env:GITHUB_STEP_SUMMARY
+        Select-String -Path test.log -Pattern '\[FAIL\]' | Select-Object -First 20 | ForEach-Object { Write-Output "::error::$($_.Line.Trim())" }
+        exit $code
       
     # Standalone command line / MCP server
     - name: Publish fatxtools.exe
