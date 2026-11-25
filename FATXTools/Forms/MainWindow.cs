@@ -1,4 +1,5 @@
 ﻿using FATX.FileSystem;
+using FATX.Reference;
 using FATXTools.Controls;
 using FATXTools.Dialogs;
 using FATXTools.DiskTypes;
@@ -27,6 +28,7 @@ namespace FATXTools.Forms
             DisableDatabaseOptions();
             AddAssistantMenu();
             AddImagingMenu();
+            AddReferenceMenu();
 
             Console.SetOut(new LogWriter(this.textBox1));
             Console.WriteLine("--------------------------------");
@@ -145,6 +147,154 @@ namespace FATXTools.Forms
             fileToolStripMenuItem.DropDownItems.Insert(index, dumpItem);
         }
 
+        private ToolStripMenuItem referenceFindItem;
+        private Volume selectedVolume;
+
+        /// <summary>
+        /// Reference > Build Reference Set from Folder / Find Reference Files on This Partition.
+        /// </summary>
+        private void AddReferenceMenu()
+        {
+            var menu = new ToolStripMenuItem("Reference");
+            var buildItem = new ToolStripMenuItem("Build Reference Set from Folder...");
+            buildItem.Click += (s, e) => BuildReferenceSet(buildItem);
+            referenceFindItem = new ToolStripMenuItem("Find Reference Files on This Partition...");
+            referenceFindItem.Click += (s, e) => FindReferenceFiles();
+            menu.DropDownItems.Add(buildItem);
+            menu.DropDownItems.Add(referenceFindItem);
+            menuStrip1.Items.Insert(Math.Max(0, menuStrip1.Items.IndexOf(helpToolStripMenuItem)), menu);
+        }
+
+        private void BuildReferenceSet(ToolStripMenuItem item)
+        {
+            string folder, target;
+            using (var fbd = new FolderBrowserDialog { Description = "Folder with the files to fingerprint (e.g. one build of a game)" })
+            {
+                if (fbd.ShowDialog(this) != DialogResult.OK)
+                    return;
+                folder = fbd.SelectedPath;
+            }
+            using (var sfd = new SaveFileDialog { Filter = "Reference set (*.json)|*.json", FileName = new DirectoryInfo(folder).Name + ".reference.json" })
+            {
+                if (sfd.ShowDialog(this) != DialogResult.OK)
+                    return;
+                target = sfd.FileName;
+            }
+
+            item.Enabled = false;
+            Console.WriteLine($"Building reference set from {folder} ...");
+            var last = System.Diagnostics.Stopwatch.StartNew();
+            var progress = new Progress<ReferenceBuildProgress>(p =>
+            {
+                if (last.ElapsedMilliseconds < 5000)
+                    return;
+                last.Restart();
+                Console.WriteLine($"  {p.FilesDone:N0} of {p.FilesTotal:N0} files, {p.BytesDone / 1048576.0:N0} of {p.BytesTotal / 1048576.0:N0} MB");
+            });
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var set = ReferenceSet.Build(folder, ReferenceSet.DefaultBlockSize, null, progress);
+                set.Save(target);
+                return set;
+            }).ContinueWith(task =>
+            {
+                if (IsDisposed)
+                    return;
+                BeginInvoke(new Action(() =>
+                {
+                    item.Enabled = true;
+                    if (task.IsFaulted)
+                    {
+                        MessageBox.Show(this, task.Exception.GetBaseException().Message, "Reference set", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                    var set = task.Result;
+                    ReferenceLibrary.Add(set);
+                    Console.WriteLine($"Reference set '{set.Name}': {set.Files.Count:N0} files, {set.TotalBytes:N0} bytes, {set.Types.Count} learned file types -> {target}");
+                    MessageBox.Show(this, $"Saved {set.Files.Count:N0} files ({set.TotalBytes / 1048576.0:N0} MB) to\n{target}\n\n" +
+                        "It is loaded now: the file carver also looks for its file types.", "Reference set", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }));
+            });
+        }
+
+        private void FindReferenceFiles()
+        {
+            var volume = selectedVolume;
+            if (volume == null || !volume.Mounted)
+            {
+                MessageBox.Show(this, "Open an image and select a mounted partition first.", "Reference set", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var sets = new System.Collections.Generic.List<ReferenceSet>();
+            string outDir;
+            using (var ofd = new OpenFileDialog { Filter = "Reference set (*.json)|*.json", Multiselect = true, Title = "Reference sets to look for" })
+            {
+                if (ofd.ShowDialog(this) != DialogResult.OK)
+                    return;
+                try
+                {
+                    foreach (var file in ofd.FileNames)
+                    {
+                        var set = ReferenceSet.Load(file);
+                        ReferenceLibrary.Add(set);
+                        sets.Add(set);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, ex.Message, "Reference set", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    return;
+                }
+            }
+            using (var fbd = new FolderBrowserDialog { Description = "Folder to save the found files to" })
+            {
+                if (fbd.ShowDialog(this) != DialogResult.OK)
+                    return;
+                outDir = fbd.SelectedPath;
+            }
+
+            referenceFindItem.Enabled = false;
+            Console.WriteLine($"Searching {volume.Name} for the files of {sets.Count} reference set(s) ...");
+            int lastPercent = -10;
+            var progress = new Progress<int>(percent =>
+            {
+                if (percent >= lastPercent + 10)
+                {
+                    lastPercent = percent;
+                    Console.WriteLine($"  {percent}%");
+                }
+            });
+
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var matcher = new ReferenceMatcher(volume, sets);
+                var matches = matcher.Analyze(default, progress);
+                var saved = ReferenceReport.SaveAll(matcher, matches, outDir);
+                ReferenceReport.Save(Path.Combine(outDir, $"reference-matches-{volume.Name}.json"), driveView?.DriveName, volume, matches);
+                var lines = ReferenceReport.Summarize(matches, sets);
+                lines.Add($"Saved {saved.exact:N0} exact files and {saved.partial:N0} partial files to {outDir}.");
+                return lines;
+            }).ContinueWith(task =>
+            {
+                if (IsDisposed)
+                    return;
+                BeginInvoke(new Action(() =>
+                {
+                    referenceFindItem.Enabled = true;
+                    if (task.IsFaulted)
+                    {
+                        MessageBox.Show(this, task.Exception.GetBaseException().Message, "Reference set", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        return;
+                    }
+                    foreach (var line in task.Result)
+                        Console.WriteLine(line);
+                    MessageBox.Show(this, string.Join("\n\n", task.Result), "Reference set", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                }));
+            });
+        }
+
         private void ShowDumpDialog(bool convert)
         {
             using (var dialog = new DumpDialog(convert))
@@ -195,6 +345,7 @@ namespace FATXTools.Forms
 
         private void DriveView_TabSelectionChanged(object sender, PartitionSelectedEventArgs e)
         {
+            selectedVolume = e?.volume;
             if (e == null)
             {
                 statusStrip1.Items.Clear();

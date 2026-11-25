@@ -139,13 +139,15 @@ namespace FATX.Recovery
         }
 
         public void RunFileCarver(PartitionState p, FileCarverInterval interval = FileCarverInterval.Cluster, bool freeSpaceOnly = false,
-            bool verify = false, CancellationToken token = default, IProgress<int> progress = null)
+            bool verify = false, CancellationToken token = default, IProgress<int> progress = null,
+            List<FATX.Reference.TypeSignature> extraSignatures = null)
         {
             var sw = System.Diagnostics.Stopwatch.StartNew();
             var carver = new FileCarver(p.Volume, interval, p.Volume.FileAreaLength)
             {
                 FreeSpaceOnly = freeSpaceOnly,
                 VerifyFiles = verify,
+                ExtraSignatures = extraSignatures ?? FATX.Reference.ReferenceLibrary.CarverSignatures,
             };
             p.CarvedFiles = carver.Analyze(token, progress);
             p.CarveTime = sw.Elapsed;

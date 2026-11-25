@@ -34,6 +34,11 @@ Download: [Github Releases](https://github.com/aerosoul94/FATXTools/releases)
 * `fatxtools convert` converts between raw and compressed images, `fatxtools hash` hashes the drive contents of either, `fatxtools devices` lists drives. On Linux use `/dev/sdX` paths.
 * Not supported: the newer `.imgcv2` format of HDD Raw Copy Tool 2.x, and writing images back to a drive.
 
+**Reference sets: find deleted copies and older versions of known files**
+* *Reference → Build Reference Set from Folder...* / `fatxtools fingerprint <folder> <set.json>` fingerprints every file below a folder (e.g. one build of a game) block by block and saves the result as reusable JSON.
+* *Reference → Find Reference Files on This Partition...* / `fatxtools match <image> <partition> --ref <set.json> --out <dir>` fingerprints every free cluster, joins the hits into files (also across fragments) and confirms complete files with the SHA-1 of the whole file. Exact copies are saved under their original names and paths; files that only partly match (usually other versions of the file) are saved under `_partial` with the share that is identical.
+* The file types of a reference set (same extension, same four starting bytes) are added to the file carver, which then also finds files of those types that are not in the set (`carve --ref`, or automatically in the GUI once a set is loaded).
+
 **More complete carving**
 * Files whose signature matches but whose header is damaged are no longer dropped: they are listed as `..._damaged` and saved up to the next file or used cluster (`KeepDamaged`, on by default).
 * With verification on, a deleted XEX/XBE in free space that fails its checksums when read contiguously is re-read from the free clusters only (skipping clusters in use) and kept if it then verifies, which recovers executables that were written around existing files.
@@ -45,7 +50,7 @@ Download: [Github Releases](https://github.com/aerosoul94/FATXTools/releases)
 * `fatxtools mcp` is a [Model Context Protocol](https://modelcontextprotocol.io) server. Add it to Claude Desktop or Claude Code and just ask, e.g. *"Open E:\Xbox\xnaxdk.img, find deleted game builds and recover the ones whose executables verify."* Claude runs on your normal Claude subscription; the tools run locally and only read the image. See [MCP setup](#mcp-setup).
 * Optional, with an Anthropic API key: *Claude → Recovery Assistant...* in the GUI, or `fatxtools ai <image> "<request>"` on the command line, lets Claude run the analysis: find deleted game builds, verify XEX/XBE files, carve lost executables and recover them into organized folders. Requires an Anthropic API key (`ANTHROPIC_API_KEY` or entered in the dialog). Tools run locally; only small JSON summaries (names, sizes, header fields) are sent to the API.
 
-**Command line**: `fatxtools info|ls|analyze|recover|carve|identify|devices|dump|convert|hash|ai` (run `dotnet run --project FATXTools.Cli -- --help`).
+**Command line**: `fatxtools info|ls|analyze|recover|carve|identify|fingerprint|match|devices|dump|convert|hash|ai` (run `dotnet run --project FATXTools.Cli -- --help`).
 
 **Benchmark**: `bench/run-benchmark.ps1 -Image <image>` compares the original version with this one on your own image (see `bench/README.md`).
 

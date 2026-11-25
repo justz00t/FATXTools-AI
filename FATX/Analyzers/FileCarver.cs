@@ -107,6 +107,13 @@ namespace FATX.Analyzers
         public bool KeepDamaged { get; set; } = true;
 
         /// <summary>
+        /// Additional file types to look for, learned from a reference set
+        /// (see <see cref="FATX.Reference.ReferenceSet.Types"/>). They have no
+        /// parser, so found files are sized up to the next file or used cluster.
+        /// </summary>
+        public List<FATX.Reference.TypeSignature> ExtraSignatures { get; set; }
+
+        /// <summary>
         /// Files larger than this are not re-read to test an alternative
         /// cluster layout.
         /// </summary>
@@ -135,6 +142,16 @@ namespace FATX.Analyzers
 
             long interval = (long)_interval;
             var magics = new HashSet<uint>(FormatDetector.Magics);
+            var extras = new Dictionary<uint, FATX.Reference.TypeSignature>();
+            foreach (var extra in ExtraSignatures ?? new List<FATX.Reference.TypeSignature>())
+            {
+                // Built-in formats have real parsers; keep those.
+                if (!FormatDetector.Magics.Contains(extra.Magic) && !extras.ContainsKey(extra.Magic))
+                {
+                    extras[extra.Magic] = extra;
+                    magics.Add(extra.Magic);
+                }
+            }
             var bytesPerCluster = (long)_volume.BytesPerCluster;
             var chunkSize = (int)Math.Max(interval, (ChunkSize / interval) * interval);
 
@@ -186,6 +203,17 @@ namespace FATX.Analyzers
                     try
                     {
                         var info = FormatDetector.Identify(new VolumeAreaSource(_volume, offset), VerifyFiles);
+                        long guessLimit = 0;
+                        if (info == null && extras.TryGetValue(magic, out var learned))
+                        {
+                            info = new FormatInfo
+                            {
+                                Format = learned.Extension.TrimStart('.').ToUpperInvariant(),
+                                Extension = learned.Extension,
+                            };
+                            info.Properties["Source"] = "file type learned from a reference set";
+                            guessLimit = Math.Max(bytesPerCluster, Math.Min(4L * 1024 * 1024 * 1024, learned.MaxSize * 2));
+                        }
                         if (info == null)
                             continue;
                         if (!info.Plausible && !KeepDamaged)
@@ -222,6 +250,7 @@ namespace FATX.Analyzers
                         {
                             InAllocatedSpace = allocated,
                             ClusterChain = chain,
+                            GuessLimit = guessLimit,
                         };
 
                         var baseName = new string(info.Format.Split(' ')[0].Where(ch => char.IsLetterOrDigit(ch)).ToArray());
@@ -293,10 +322,10 @@ namespace FATX.Analyzers
             for (int i = 0; i < _carvedFiles.Count; i++)
             {
                 var file = _carvedFiles[i] as CarvedFileSignature;
-                if (file == null || !file.Damaged)
+                if (file == null || (!file.Damaged && file.GuessLimit <= 0))
                     continue;
 
-                long limit = Math.Min(MaxUnknownSize, _length - file.Offset);
+                long limit = Math.Min(file.GuessLimit > 0 ? file.GuessLimit : MaxUnknownSize, _length - file.Offset);
                 if (i + 1 < _carvedFiles.Count && _carvedFiles[i + 1].Offset > file.Offset)
                     limit = Math.Min(limit, _carvedFiles[i + 1].Offset - file.Offset);
 
@@ -311,7 +340,9 @@ namespace FATX.Analyzers
                 file.FileSize = Math.Max(0, limit);
                 file.Info.FileSize = file.FileSize;
                 file.Info.FileSizeExact = false;
-                file.Info.Warnings.Add("Header is damaged; the size is a guess (up to the next file or used cluster).");
+                file.Info.Warnings.Add(file.Damaged
+                    ? "Header is damaged; the size is a guess (up to the next file or used cluster)."
+                    : "This type has no size in a known header; the size is a guess (up to the next file or used cluster).");
             }
         }
 

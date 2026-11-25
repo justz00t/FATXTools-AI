@@ -3,6 +3,7 @@ using FATX.Analyzers;
 using FATX.Analyzers.Signatures;
 using FATX.Formats;
 using FATX.Imaging;
+using FATX.Reference;
 using FATX.Recovery;
 using FATXTools.Database;
 using System;
@@ -33,6 +34,14 @@ Usage:
       Carve files by signature; --out saves them.
   fatxtools identify <file> [--verify]
       Identify an Xbox file (XEX/XBE/STFS/...) and verify its checksums.
+  fatxtools fingerprint <folder> <out.json> [--block <bytes>] [--name <name>]
+      Fingerprint every file below a folder (e.g. one build of a game) into a reusable reference set.
+  fatxtools match <image> <partition> --ref <set.json>[,<set2.json>...] [--out <dir>] [--all-clusters]
+                  [--min-percent <n>] [--report <file.json>]
+      Find deleted copies and older versions of the reference files on the partition by content.
+      Exact copies are confirmed by SHA-1 and saved under their original paths; partial matches
+      (usually other versions) go to _partial. --all-clusters also searches clusters that are in use.
+      'carve --ref <set.json>' additionally makes the carver look for the file types of a reference set.
   fatxtools devices
       List the physical drives of this computer.
   fatxtools dump <device|image> <target.img|target.imgc> [--resume] [--overwrite] [--hash md5,sha1,sha256]
@@ -102,6 +111,8 @@ Options:
                     case "recover": return Recover(opts, log);
                     case "carve": return Carve(opts, log);
                     case "identify": return Identify(opts, log);
+                    case "fingerprint": return Fingerprint(opts, log);
+                    case "match": return Match(opts, log);
                     case "devices": return Devices(log);
                     case "hash": return Hash(opts, log);
                     case "dump":
@@ -269,7 +280,10 @@ Options:
             {
                 var p = session.GetPartition(opts.Positional(1, "partition"));
                 var interval = (FileCarverInterval)Enum.Parse(typeof(FileCarverInterval), opts.Get("interval", "cluster"), true);
-                session.RunFileCarver(p, interval, opts.Has("free-only"), opts.Has("verify"));
+                List<TypeSignature> learned = null;
+                if (opts.Has("ref"))
+                    learned = LoadReferenceSets(opts, log).SelectMany(s => s.Types).ToList();
+                session.RunFileCarver(p, interval, opts.Has("free-only"), opts.Has("verify"), default, null, learned);
                 var baseOffset = p.Volume.Offset + p.Volume.FileAreaByteOffset;
                 foreach (var c in p.CarvedFiles.OfType<CarvedFileSignature>())
                 {
@@ -307,6 +321,111 @@ Options:
                 foreach (var w in info.Warnings) log.WriteLine($"  Warning: {w}");
                 if (info.FileSize.HasValue && info.FileSize != fs.Length)
                     log.WriteLine($"  Note: header describes 0x{info.FileSize:X} bytes, file is 0x{fs.Length:X} bytes.");
+            }
+            return 0;
+        }
+
+        private static int Fingerprint(Options opts, TextWriter log)
+        {
+            var folder = opts.Positional(0, "folder");
+            var output = opts.Positional(1, "out.json");
+            int block = int.Parse(opts.Get("block", ReferenceSet.DefaultBlockSize.ToString()));
+
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            bool interactive = !Console.IsErrorRedirected;
+            var last = System.Diagnostics.Stopwatch.StartNew();
+            var progress = new SyncProgress<ReferenceBuildProgress>(p =>
+            {
+                if (last.ElapsedMilliseconds < (interactive ? 250 : 10000) && p.FilesDone < p.FilesTotal)
+                    return;
+                last.Restart();
+                var line = $"{p.FilesDone:N0} of {p.FilesTotal:N0} files, {p.BytesDone / 1048576.0:N0} of {p.BytesTotal / 1048576.0:N0} MB";
+                Console.Error.Write(interactive ? "\r" + line.PadRight(70) : line + Environment.NewLine);
+            });
+
+            var set = ReferenceSet.Build(folder, block, opts.Get("name", null), progress);
+            if (interactive)
+                Console.Error.WriteLine();
+            set.Save(output);
+
+            log.WriteLine($"Reference set '{set.Name}': {set.Files.Count:N0} files, {set.TotalBytes:N0} bytes, {set.BlockSize} byte blocks, " +
+                          $"{set.Types.Count} learned file types, in {sw.Elapsed.TotalSeconds:F1}s -> {output} ({new FileInfo(output).Length:N0} bytes)");
+            foreach (var t in set.Types)
+                log.WriteLine($"  type {t.Extension}: starts with \"{MagicText(t.Magic)}\" ({t.Files} files, largest {t.MaxSize:N0} bytes)");
+            return 0;
+        }
+
+        private static string MagicText(uint magic)
+        {
+            return new string(new[] { (char)(magic >> 24), (char)((magic >> 16) & 0xFF), (char)((magic >> 8) & 0xFF), (char)(magic & 0xFF) });
+        }
+
+        private static List<ReferenceSet> LoadReferenceSets(Options opts, TextWriter log)
+        {
+            var paths = (opts.Get("ref", null) ?? throw new ArgumentException("--ref <set.json> is required."))
+                .Split(new[] { ',' }, StringSplitOptions.RemoveEmptyEntries);
+            var sets = new List<ReferenceSet>();
+            foreach (var path in paths)
+            {
+                var set = ReferenceSet.Load(path.Trim());
+                log.WriteLine($"Reference set '{set.Name}': {set.Files.Count:N0} files, {set.TotalBytes:N0} bytes");
+                sets.Add(set);
+            }
+            return sets;
+        }
+
+        private static int Match(Options opts, TextWriter log)
+        {
+            var sets = LoadReferenceSets(opts, log);
+            using (var session = Open(opts))
+            using (var cts = new CancellationTokenSource())
+            {
+                Console.CancelKeyPress += (s, e) => { e.Cancel = true; cts.Cancel(); };
+                var p = session.GetPartition(opts.Positional(1, "partition"));
+                var matcher = new ReferenceMatcher(p.Volume, sets)
+                {
+                    FreeSpaceOnly = !opts.Has("all-clusters"),
+                    MinPercent = double.Parse(opts.Get("min-percent", "20"), System.Globalization.CultureInfo.InvariantCulture),
+                };
+
+                bool interactive = !Console.IsErrorRedirected;
+                var progress = new SyncProgress<int>(percent =>
+                {
+                    if (interactive)
+                        Console.Error.Write($"\rSearching {p.Name}: {percent}%   ");
+                });
+
+                var sw = System.Diagnostics.Stopwatch.StartNew();
+                var matches = matcher.Analyze(cts.Token, progress);
+                if (interactive)
+                    Console.Error.WriteLine();
+
+                var summary = ReferenceReport.Summarize(matches, sets);
+                foreach (var m in matches.Take(opts.Has("quiet") ? 0 : 200))
+                    log.WriteLine("  " + m);
+                if (matches.Count > 200 && !opts.Has("quiet"))
+                    log.WriteLine($"  ... {matches.Count - 200:N0} more (use --report for the full list)");
+
+                log.WriteLine($"[{p.Name}] searched {matcher.ClustersScanned:N0} {(matcher.FreeSpaceOnly ? "free " : "")}clusters in {sw.Elapsed.TotalSeconds:F1}s, " +
+                              $"{matcher.ClustersHit:N0} hold reference data.");
+                foreach (var line in summary)
+                    log.WriteLine(line);
+                if (matcher.HitsTruncated)
+                    log.WriteLine("Warning: the hit limit was reached; some copies may be missing.");
+
+                var report = opts.Get("report", null);
+                if (report != null)
+                {
+                    ReferenceReport.Save(report, session.ImageName, p.Volume, matches);
+                    log.WriteLine($"Report: {report}");
+                }
+
+                var outDir = opts.Get("out", null);
+                if (outDir != null)
+                {
+                    var saved = ReferenceReport.SaveAll(matcher, matches, outDir, cts.Token);
+                    log.WriteLine($"Saved {saved.exact:N0} exact files and {saved.partial:N0} partial files to {outDir}.");
+                }
             }
             return 0;
         }
@@ -489,7 +608,7 @@ Options:
 
         private static readonly HashSet<string> Flags = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
         {
-            "deleted", "analyze", "carve", "free-only", "verify", "deleted-only", "carved", "quiet", "resume", "overwrite"
+            "deleted", "analyze", "carve", "free-only", "verify", "deleted-only", "carved", "quiet", "resume", "overwrite", "all-clusters"
         };
 
         public static Options Parse(string[] args)

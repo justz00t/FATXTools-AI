@@ -37,6 +37,13 @@ namespace FATX.Analyzers.Signatures
         /// </summary>
         public List<uint> ClusterChain { get; set; }
 
+        /// <summary>
+        /// For files whose size cannot be read from a header: the most to
+        /// save (0 = not applicable). The carver then sizes the file up to
+        /// the next found file or used cluster.
+        /// </summary>
+        public long GuessLimit { get; set; }
+
         public override bool Test() => true;
 
         public override void Parse()

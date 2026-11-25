@@ -253,7 +253,11 @@ namespace FATXTools.Controls
             taskRunner.Maximum = searchLength;
             taskRunner.Interval = (long)searchInterval;
 
-            FileCarver carver = new FileCarver(this.volume, searchInterval, searchLength);
+            FileCarver carver = new FileCarver(this.volume, searchInterval, searchLength)
+            {
+                // File types learned from loaded reference sets.
+                ExtraSignatures = FATX.Reference.ReferenceLibrary.CarverSignatures
+            };
             var numBlocks = searchLength / (long)searchInterval;
             await taskRunner.RunTaskAsync("File Carver",
                 // Task
